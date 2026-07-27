@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>Custom Manifest + Tracking Data</title>
+    <!-- PWA Meta Tags -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#1877f2">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Manifest+Track">
+    <link rel="apple-touch-icon" href="/static/icons/icon-152x152.png">
+    <!-- QR Code library -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: #f0f2f5;
+            color: #1c1e21;
+            padding: 2rem 1rem;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        .card {
+            position: relative;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.08);
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+        .header { text-align: center; margin-bottom: 2rem; }
+        .header h1 { font-size: 2rem; font-weight: 700; color: #1877f2; }
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 2rem;
+            border-bottom: 2px solid #e4e6eb;
+        }
+        .tab-btn {
+            padding: 12px 24px;
+            border: none;
+            background: transparent;
+            font-size: 1rem;
+            font-weight: 600;
+            color: #65676b;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            transition: all 0.2s;
+        }
+        .tab-btn.active {
+            color: #1877f2;
+            border-bottom-color: #1877f2;
+        }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .upload-grid { display: flex; gap: 1.5rem; flex-wrap: wrap; justify-content: center; margin-bottom: 2rem; }
+        .upload-box {
+            flex: 1;
+            min-width: 250px;
+            background: #f7f8fa;
+            border: 2px dashed #ccd0d5;
+            border-radius: 16px;
+            padding: 1.5rem;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .upload-box:hover { border-color: #1877f2; background: #e7f3ff; }
+        .upload-icon { font-size: 2.5rem; margin-bottom: 0.5rem; }
+        .upload-title { font-weight: 600; margin-bottom: 0.25rem; }
+        .upload-sub { font-size: 0.75rem; color: #65676b; }
+        .file-name { margin-top: 0.75rem; font-size: 0.85rem; color: #1877f2; background: #e7f3ff; padding: 0.25rem 0.75rem; border-radius: 20px; display: inline-block; }
+        .file-input { display: none; }
+        .btn-primary {
+            background: #1877f2;
+            color: white;
+            border: none;
+            border-radius: 12px;
+            padding: 0.75rem 1.5rem;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            width: 100%;
+            margin-bottom: 1rem;
+        }
+        .btn-primary:hover { background: #166fe5; }
+        .btn-purple { background: #8e44ad; }
+        .btn-qr { background: #28a745; }
+        .btn-qr:hover { background: #218838; }
+        button:disabled { opacity: 0.6; cursor: not-allowed; }
+        .spinner { display: none; text-align: center; }
+        .spinner.active { display: block; }
+        .spinner div { width: 40px; height: 40px; border: 4px solid #e4e6eb; border-top-color: #1877f2; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .message { margin-top: 1rem; padding: 0.75rem; border-radius: 12px; text-align: center; display: none; }
+        .error { background: #fee4e2; border: 1px solid #ff4d4f; color: #cf222e; }
+        .success { background: #e4f5e8; border: 1px solid #2e7d32; color: #2e7d32; }
+        .section-title { font-size: 1.3rem; font-weight: 600; margin: 1.5rem 0 1rem 0; color: #1c1e21; border-left: 5px solid #1877f2; padding-left: 1rem; }
+        .tracking-table-container { overflow-x: auto; margin-top: 1rem; }
+        table.tracking-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        table.tracking-table th, table.tracking-table td {
+            padding: 0.5rem;
+            border: 1px solid #e4e6eb;
+            text-align: left;
+        }
+        table.tracking-table th {
+            background: #f7f8fa;
+            font-weight: 600;
+        }
+        .status-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            background-color: #adb5bd;
+            color: white;
+        }
+        .filters-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin: 1rem 0;
+        }
+        .filters-bar select {
+            padding: 0.5rem;
+            border-radius: 8px;
+            border: 1px solid #ccd0d5;
+        }
+        .wtbox-layout { display: flex; gap: 2rem; flex-wrap: wrap; margin-top: 1rem; }
+        .wtbox-table-container { flex: 2; min-width: 300px; overflow-x: auto; max-height: 600px; border-radius: 16px; border: 1px solid #e4e6eb; background: white; }
+        .bag-panel { flex: 1; min-width: 280px; background: #f7f8fa; border-radius: 16px; padding: 1rem; border: 1px solid #e4e6eb; height: fit-content; max-height: 600px; overflow-y: auto; }
+        .bag-item-list { list-style: none; padding: 0; }
+        .bag-item-list li { padding: 0.5rem; border-bottom: 1px solid #e4e6eb; font-size: 0.85rem; }
+        .bag-total { margin-top: 1rem; font-weight: bold; }
+        .warning { color: #cf222e; margin-top: 0.5rem; padding: 0.5rem; background: #fee4e2; border-radius: 8px; }
+        .editable { background-color: #fff9c4; cursor: text; }
+        .editable:focus { outline: 1px solid #1877f2; }
+        .bag-clickable { cursor: pointer; text-decoration: underline dotted; color: #1877f2; }
+        .save-wtbox-btn { background: #42b72a; color: white; border: none; border-radius: 12px; padding: 0.75rem; width: 100%; margin-top: 1rem; }
+        .checkbox-col { width: 30px; text-align: center; }
+        .select-all-checkbox { cursor: pointer; }
+        .flex-buttons { display: flex; gap: 1rem; margin-top: 1rem; flex-wrap: wrap; }
+        #installBtn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            padding: 8px 16px;
+            font-weight: bold;
+            cursor: pointer;
+            z-index: 100;
+            display: none;
+        }
+        .wtbox-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        .btn-secondary {
+            background: white;
+            color: #1877f2;
+            border: 1px solid #1877f2;
+            border-radius: 12px;
+            padding: 0.6rem 1rem;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .btn-secondary:hover { background: #e7f3ff; }
+        .max-weight-label {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.85rem;
+            color: #65676b;
+        }
+        .max-weight-label input {
+            width: 60px;
+            padding: 0.4rem;
+            border: 1px solid #ccd0d5;
+            border-radius: 8px;
+        }
+        .bag-toggle {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 600;
+            font-size: 0.9rem;
+            cursor: pointer;
+            margin-left: auto;
+        }
+        .bag-toggle input { width: 18px; height: 18px; cursor: pointer; }
+        .bag-marking-cell.empty { color: #adb5bd; }
+        #invoiceModal .modal-hint {
+            font-size: 0.8rem;
+            color: #65676b;
+            margin-bottom: 0.75rem;
+        }
+
+        /* ---------- Responsive ---------- */
+        @media (max-width: 720px) {
+            body { padding: 1rem 0.5rem; }
+            .card { padding: 1.25rem; border-radius: 16px; }
+            .header h1 { font-size: 1.4rem; }
+            .tabs { gap: 4px; }
+            .tab-btn { padding: 10px 14px; font-size: 0.9rem; }
+            .upload-grid { gap: 1rem; }
+            .upload-box { min-width: 100%; padding: 1rem; }
+            .wtbox-layout { flex-direction: column; }
+            .wtbox-table-container { max-height: 420px; min-width: 0; }
+            .bag-panel { max-height: none; }
+            .wtbox-toolbar { flex-direction: column; align-items: stretch; }
+            .bag-toggle { margin-left: 0; justify-content: flex-start; }
+            .flex-buttons { flex-direction: column; }
+            .flex-buttons button { width: 100%; }
+            #installBtn { position: static; display: inline-block; margin-bottom: 1rem; }
+            table.tracking-table { font-size: 0.78rem; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            * { animation-duration: 0.001ms !important; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="card">
+        <div class="header">
+            <h1>📦 Custom Manifest + 📋 Tracking Data</h1>
+        </div>
+        <button id="installBtn">📲 Install App</button>
+        <div class="tabs">
+            <button class="tab-btn active" data-tab="manifest">📦 Manifest WT‑Box</button>
+            <button class="tab-btn" data-tab="tracking">📍 Tracking Data</button>
+        </div>
+
+        <!-- Manifest Tab -->
+        <div class="tab-content active" id="manifestTab">
+            <div class="upload-grid">
+                <div class="upload-box" id="primaryBox">
+                    <div class="upload-icon">📁</div>
+                    <div class="upload-title">Manifest Excel</div>
+                    <div class="upload-sub">S.NO, CONSIGNER, HAWB#, GBP, Actual WT</div>
+                    <div class="file-name" id="primaryFileName">No file chosen</div>
+                    <input type="file" id="primaryFile" accept=".xlsx,.xls" class="file-input">
+                </div>
+                <div class="upload-box" id="secondaryBox">
+                    <div class="upload-icon">📄</div>
+                    <div class="upload-title">MAWB Excel</div>
+                    <div class="upload-sub">HAWB, NO OF PCS, Consignee Name, Country</div>
+                    <div class="file-name" id="secondaryFileName">No file chosen</div>
+                    <input type="file" id="secondaryFile" accept=".xlsx,.xls" class="file-input">
+                </div>
+            </div>
+            <button class="btn-primary" id="processUploadBtn">📤 Process Upload & Show WT‑Box</button>
+            <div class="spinner" id="spinner"><div></div><p>Processing...</p></div>
+            <div class="message error" id="errorMsg"></div>
+            <div class="message success" id="successMsg"></div>
+
+            <div id="wtboxSection" style="display: none;">
+                <div class="section-title">✏️ WT‑Box Report</div>
+                <div class="wtbox-toolbar">
+                    <button class="btn-secondary" id="resuggestBagsBtn" type="button">🔁 Re-suggest bag markings</button>
+                    <label class="max-weight-label">up to
+                        <input type="number" id="maxBagWeightInput" value="30" min="1" step="1">
+                        kg / bag
+                    </label>
+                    <label class="max-weight-label">max
+                        <input type="number" id="maxBoxPerPartInput" value="10" min="1" step="1">
+                        boxes / manifest part
+                    </label>
+                    <label class="bag-toggle">
+                        <input type="checkbox" id="bagBasedToggle">
+                        Generate as bag-based invoice
+                    </label>
+                </div>
+                <div class="wtbox-layout">
+                    <div class="wtbox-table-container" id="wtboxTableContainer"></div>
+                    <div class="bag-panel" id="bagPanel">
+                        <h3>📊 Bag Summary</h3>
+                        <div id="bagPanelContent">Click on any marking in the <strong>Bag Marking</strong> column to see details.</div>
+                        <div id="wtTotals" style="margin-top:1rem; padding:0.5rem; background:#e9ecef; border-radius:12px;"></div>
+                    </div>
+                </div>
+                <button class="save-wtbox-btn" id="saveWtboxBtn" style="display:none;">💾 Save WT‑Box to Excel</button>
+                <button class="btn-primary" id="generateManifestBtn" style="margin-top:1rem;">🚀 Generate Custom Manifest</button>
+            </div>
+
+            <div id="fileListSection" style="display: none;">
+                <div class="section-title">📥 Generated Files</div>
+                <div id="fileGrid" style="display: flex; flex-direction: column; gap: 0.5rem;"></div>
+                <button id="downloadAllZipBtn" class="btn-primary btn-purple" style="margin-top:1rem;">📦 Download All as ZIP</button>
+            </div>
+        </div>
+
+        <!-- Tracking Tab -->
+        <div class="tab-content" id="trackingTab">
+            <div class="upload-grid">
+                <div class="upload-box" id="trackingUploadBox">
+                    <div class="upload-icon">📄</div>
+                    <div class="upload-title">MAWB Excel</div>
+                    <div class="upload-sub">HAWB, Consignee Name, Country, NO OF PCS, Service, Forwarding Number</div>
+                    <div class="file-name" id="trackingFileName">No file chosen</div>
+                    <input type="file" id="trackingFile" accept=".xlsx,.xls" class="file-input">
+                </div>
+            </div>
+            <button class="btn-primary" id="processTrackingBtn">🔍 Process MAWB & Show Data</button>
+            <div class="spinner" id="trackingSpinner"><div></div><p>Processing...</p></div>
+            <div class="message error" id="trackingErrorMsg"></div>
+            <div class="message success" id="trackingSuccessMsg"></div>
+
+            <div id="trackingResults" style="display:none;">
+                <div class="section-title">📊 Tracking Data</div>
+                <div class="filters-bar">
+                    <select id="filterCountry"><option value="">All Countries</option></select>
+                    <select id="filterService"><option value="">All Services</option></select>
+                </div>
+                <div class="tracking-table-container">
+                    <table class="tracking-table" id="trackingTable">
+                        <thead>
+                            <tr>
+                                <th class="checkbox-col"><input type="checkbox" id="selectAllCheckbox"></th>
+                                <th>Country</th><th>Service</th><th>HAWB</th><th>Consignee Name</th><th>Tracking Number</th><th>Status</th><th>PCS</th>
+                            </tr>
+                        </thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <div class="flex-buttons">
+                    <button class="btn-primary" id="downloadSelectedBtn" style="margin-bottom:0;">📥 Download Selected (Excel)</button>
+                    <button class="btn-primary" id="downloadAllTrackingBtn" style="margin-bottom:0;">📥 Download All (Excel)</button>
+                    <button class="btn-primary btn-qr" id="generateQRBtn" style="margin-bottom:0;">📇 Generate Printable QR Sheet</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// ============================ HELPERS ============================
+function escapeHtml(str) {
+    return String(str).replace(/[&<>]/g, m => m === '&' ? '&amp;' : m === '<' ? '&lt;' : '&gt;');
+}
+function showError(msg) { 
+    const el = document.getElementById('errorMsg');
+    el.textContent = msg; el.style.display = 'block';
+    document.getElementById('successMsg').style.display = 'none';
+    setTimeout(() => el.style.display = 'none', 5000);
+}
+function showSuccess(msg) {
+    const el = document.getElementById('successMsg');
+    el.textContent = msg; el.style.display = 'block';
+    document.getElementById('errorMsg').style.display = 'none';
+    setTimeout(() => el.style.display = 'none', 3000);
+}
+function showTrackingError(msg) {
+    const el = document.getElementById('trackingErrorMsg');
+    el.textContent = msg; el.style.display = 'block';
+    document.getElementById('trackingSuccessMsg').style.display = 'none';
+    setTimeout(() => el.style.display = 'none', 5000);
+}
+function showTrackingSuccess(msg) {
+    const el = document.getElementById('trackingSuccessMsg');
+    el.textContent = msg; el.style.display = 'block';
+    document.getElementById('trackingErrorMsg').style.display = 'none';
+    setTimeout(() => el.style.display = 'none', 3000);
+}
+function handleFileSelect(input, span) {
+    span.textContent = input.files.length ? input.files[0].name : 'No file chosen';
+}
+function setupDrop(box, input, span) {
+    box.addEventListener('dragover', (e) => e.preventDefault());
+    box.addEventListener('drop', (e) => {
+        e.preventDefault();
+        if (e.dataTransfer.files.length) {
+            input.files = e.dataTransfer.files;
+            handleFileSelect(input, span);
+        }
+    });
+    box.addEventListener('click', () => input.click());
+}
+
+// ============================ TAB SWITCHING ============================
+document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+        const tabId = this.getAttribute('data-tab') + 'Tab';
+        document.getElementById(tabId).classList.add('active');
+    });
+});
+
+// ============================ MANIFEST TAB LOGIC ============================
+const primaryInput = document.getElementById('primaryFile');
+const secondaryInput = document.getElementById('secondaryFile');
+const primaryNameSpan = document.getElementById('primaryFileName');
+const secondaryNameSpan = document.getElementById('secondaryFileName');
+const processUploadBtn = document.getElementById('processUploadBtn');
+const generateManifestBtn = document.getElementById('generateManifestBtn');
+const spinner = document.getElementById('spinner');
+const wtboxSection = document.getElementById('wtboxSection');
+const wtboxTableContainer = document.getElementById('wtboxTableContainer');
+const saveWtboxBtn = document.getElementById('saveWtboxBtn');
+const bagPanelContent = document.getElementById('bagPanelContent');
+const wtTotalsDiv = document.getElementById('wtTotals');
+const fileListSection = document.getElementById('fileListSection');
+const fileGrid = document.getElementById('fileGrid');
+const downloadAllZipBtn = document.getElementById('downloadAllZipBtn');
+const maxBoxPerPartInput = document.getElementById('maxBoxPerPartInput');
+
+// Pre-fill the box-per-part limit with whatever was last used, so nobody
+// has to remember this month's customs limit from scratch.
+(async () => {
+    try {
+        const res = await fetch('/last_box_limit');
+        const data = await res.json();
+        if (data.max_box_per_part) maxBoxPerPartInput.value = data.max_box_per_part;
+    } catch (err) { /* non-fatal - keep the default shown in the HTML */ }
+})();
+
+function getMaxBoxPerPart() {
+    const val = parseInt(maxBoxPerPartInput.value, 10);
+    return (!isNaN(val) && val > 0) ? val : 10;
+}
+
+let currentSessionId = null;
+let currentWtboxData = null;
+let currentSelectedBag = null;
+
+primaryInput.addEventListener('change', () => handleFileSelect(primaryInput, primaryNameSpan));
+secondaryInput.addEventListener('change', () => handleFileSelect(secondaryInput, secondaryNameSpan));
+setupDrop(document.getElementById('primaryBox'), primaryInput, primaryNameSpan);
+setupDrop(document.getElementById('secondaryBox'), secondaryInput, secondaryNameSpan);
+
+function updateWtTotals() {
+    if (!currentWtboxData) return;
+    let totalBoxes = 0, totalWeight = 0;
+    for (const row of currentWtboxData) {
+        let boxVal = row.Box;
+        if (boxVal && typeof boxVal === 'string') { let num = parseFloat(boxVal); if (!isNaN(num)) totalBoxes += num; }
+        else if (typeof boxVal === 'number') totalBoxes += boxVal;
+        let wt = parseFloat(row.Weight); if (!isNaN(wt)) totalWeight += wt;
+    }
+    wtTotalsDiv.innerHTML = `<strong>Total Boxes (PCS):</strong> ${totalBoxes} &nbsp; | &nbsp; <strong>Total Weight:</strong> ${totalWeight.toFixed(2)} kg`;
+}
+function updateBagPanel(bagLabel) {
+    if (!currentWtboxData) return;
+    if (!bagLabel || bagLabel.toString().trim() === '') {
+        bagPanelContent.innerHTML = 'Click on any marking in the <strong>Bag Marking</strong> column to see details.';
+        currentSelectedBag = null;
+        return;
+    }
+    currentSelectedBag = bagLabel;
+    const items = [];
+    for (const row of currentWtboxData) {
+        if (row.BagMarking && row.BagMarking.toString() === bagLabel.toString()) {
+            items.push({ hawb: row.HAWB, weight: parseFloat(row.Weight) || 0, box: row.Box });
+        }
+    }
+    if (items.length === 0) {
+        bagPanelContent.innerHTML = `<p>No HAWBs assigned to marking "${escapeHtml(bagLabel)}" yet.</p>`;
+        return;
+    }
+    let totalWeight = 0;
+    let listHtml = '<ul class="bag-item-list">';
+    for (const item of items) { totalWeight += item.weight; listHtml += `<li>${escapeHtml(item.hawb)} – ${item.weight.toFixed(2)} kg (${escapeHtml(String(item.box))} box${item.box == 1 ? '' : 'es'})</li>`; }
+    listHtml += '</ul>';
+    const maxWeight = parseFloat(document.getElementById('maxBagWeightInput')?.value) || 30;
+    const warningHtml = totalWeight > maxWeight ? `<div class="warning">⚠️ Warning: Total weight exceeds ${maxWeight} kg!</div>` : '';
+    bagPanelContent.innerHTML = `<div><strong>Marking:</strong> ${escapeHtml(bagLabel)}</div><div style="margin-top: 0.75rem;"><strong>HAWBs sharing this marking:</strong></div>${listHtml}<div class="bag-total"><strong>Total weight:</strong> ${totalWeight.toFixed(2)} kg</div>${warningHtml}`;
+}
+function makeBagClickable(cell, bagLabel) {
+    if (!bagLabel || bagLabel.toString().trim() === '') return;
+    cell.classList.add('bag-clickable');
+    cell.addEventListener('click', (e) => { e.stopPropagation(); updateBagPanel(bagLabel); });
+}
+function renderWtboxTable(data) {
+    if (!data || data.length === 0) return;
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
+    ['HAWB', 'Details', 'Box', 'Bag Marking', 'Weight', 'Country'].forEach(col => { const th = document.createElement('th'); th.textContent = col; headerRow.appendChild(th); });
+    thead.appendChild(headerRow); table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    data.forEach(row => {
+        if (row.BagMarking === undefined || row.BagMarking === null) row.BagMarking = '';
+        const tr = document.createElement('tr');
+        const tdHawb = document.createElement('td'); tdHawb.textContent = row.HAWB; tr.appendChild(tdHawb);
+        const tdDetails = document.createElement('td'); tdDetails.textContent = row.Details; tr.appendChild(tdDetails);
+
+        // Box = pcs count only. Never editable, never repurposed for bag markings.
+        const tdBox = document.createElement('td'); tdBox.textContent = row.Box; tr.appendChild(tdBox);
+
+        // Bag Marking = its own dedicated, editable field.
+        const tdBag = document.createElement('td');
+        tdBag.contentEditable = 'true';
+        tdBag.classList.add('editable', 'bag-marking-cell');
+        tdBag.textContent = row.BagMarking;
+        if (!row.BagMarking) tdBag.classList.add('empty');
+        tdBag.addEventListener('blur', (e) => {
+            const newValue = e.target.textContent.trim();
+            row.BagMarking = newValue;
+            tdBag.classList.toggle('empty', !newValue);
+            if (currentSelectedBag && currentSelectedBag === newValue) updateBagPanel(currentSelectedBag);
+            makeBagClickable(tdBag, row.BagMarking);
+            updateWtTotals();
+        });
+        makeBagClickable(tdBag, row.BagMarking);
+        tr.appendChild(tdBag);
+
+        const tdWeight = document.createElement('td'); tdWeight.contentEditable = 'true'; tdWeight.classList.add('editable'); tdWeight.textContent = row.Weight;
+        tdWeight.addEventListener('blur', (e) => { row.Weight = e.target.textContent.trim(); updateWtTotals(); });
+        tr.appendChild(tdWeight);
+        const tdCountry = document.createElement('td'); tdCountry.textContent = row.Country; tr.appendChild(tdCountry);
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    wtboxTableContainer.innerHTML = ''; wtboxTableContainer.appendChild(table);
+    saveWtboxBtn.style.display = 'block';
+    updateWtTotals();
+}
+
+async function resuggestBagMarkings() {
+    if (!currentSessionId) return;
+    const maxWeight = parseFloat(document.getElementById('maxBagWeightInput').value) || 30;
+    const btn = document.getElementById('resuggestBagsBtn');
+    const originalText = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Suggesting…';
+    try {
+        const res = await fetch(`/suggest_bag_markings/${currentSessionId}?max_weight=${maxWeight}`);
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error || 'Could not get suggestions.');
+        const suggestions = result.suggestions || {};
+        currentWtboxData.forEach(row => {
+            if (suggestions[row.HAWB] !== undefined) row.BagMarking = suggestions[row.HAWB];
+        });
+        renderWtboxTable(currentWtboxData);
+        showSuccess('Bag markings re-suggested. Manual edits were overwritten.');
+    } catch (err) {
+        showError(err.message || 'Could not re-suggest bag markings.');
+    } finally {
+        btn.disabled = false; btn.textContent = originalText;
+    }
+}
+document.getElementById('resuggestBagsBtn').addEventListener('click', resuggestBagMarkings);
+async function showInvoiceModal(partCount, isBagBased, callback) {
+    const modal = document.createElement('div');
+    modal.id = 'invoiceModal';
+    modal.style.position = 'fixed'; modal.style.top = '0'; modal.style.left = '0';
+    modal.style.width = '100%'; modal.style.height = '100%';
+    modal.style.backgroundColor = 'rgba(0,0,0,0.5)';
+    modal.style.display = 'flex'; modal.style.alignItems = 'center'; modal.style.justifyContent = 'center';
+    modal.style.zIndex = '1000';
+    const modalContent = document.createElement('div');
+    modalContent.style.backgroundColor = 'white'; modalContent.style.borderRadius = '20px';
+    modalContent.style.padding = '2rem'; modalContent.style.width = '400px'; modalContent.style.maxWidth = '90%';
+    modalContent.style.maxHeight = '85vh'; modalContent.style.overflowY = 'auto';
+    modalContent.innerHTML = `<h3>Enter Invoice Numbers</h3><p class="modal-hint">This manifest will be generated as ${partCount} part${partCount > 1 ? 's' : ''}.</p><div id="invoiceInputsContainer"></div><div style="margin-top:1rem; display:flex; gap:1rem;"><button id="confirmInvoiceBtn" class="btn-primary">Confirm</button><button id="closeModalBtn" class="btn-primary" style="background:#ccc;">Cancel</button></div>`;
+    modal.appendChild(modalContent);
+    document.body.appendChild(modal);
+    const container = document.getElementById('invoiceInputsContainer');
+    container.innerHTML = '';
+
+    // Prefill from the last manifest number used, continuing the sequence if it ends in digits.
+    let suggestions = [];
+    try {
+        const res = await fetch('/last_manifest_number');
+        const data = await res.json();
+        const last = data.last_manifest_number || '';
+        const match = last.match(/^(.*?)(\d+)$/);
+        if (match) {
+            const prefix = match[1]; const pad = match[2].length; let n = parseInt(match[2], 10);
+            for (let i = 0; i < partCount; i++) { n += 1; suggestions.push(prefix + String(n).padStart(pad, '0')); }
+        }
+    } catch (err) { /* non-fatal - fall back to placeholders below */ }
+    if (suggestions.length !== partCount) {
+        const fallbackPrefix = isBagBased ? 'BAG-' : 'INV-';
+        suggestions = Array.from({ length: partCount }, (_, i) => `${fallbackPrefix}${i + 1}`);
+    }
+
+    for (let i = 1; i <= partCount; i++) {
+        const label = document.createElement('label'); label.textContent = `Invoice Number for Part ${i}:`;
+        const input = document.createElement('input'); input.type = 'text'; input.value = suggestions[i - 1]; input.id = `inv_${i}`;
+        input.style.width = '100%'; input.style.padding = '0.5rem'; input.style.marginBottom = '1rem';
+        container.appendChild(label); container.appendChild(input);
+    }
+    document.getElementById('confirmInvoiceBtn').onclick = () => {
+        const invoices = [];
+        for (let i = 1; i <= partCount; i++) {
+            let val = document.getElementById(`inv_${i}`).value.trim();
+            if (val === '') val = suggestions[i - 1];
+            invoices.push(val);
+        }
+        document.body.removeChild(modal);
+        callback(invoices);
+    };
+    document.getElementById('closeModalBtn').onclick = () => document.body.removeChild(modal);
+}
+processUploadBtn.addEventListener('click', async () => {
+    if (!primaryInput.files.length || !secondaryInput.files.length) { showError('Please select both Excel files.'); return; }
+    fileListSection.style.display = 'none'; wtboxSection.style.display = 'none';
+    processUploadBtn.disabled = true; spinner.classList.add('active');
+    const formData = new FormData();
+    formData.append('primary', primaryInput.files[0]); formData.append('secondary', secondaryInput.files[0]);
+    try {
+        const response = await fetch('/upload_and_prepare', { method: 'POST', body: formData });
+        const data = await response.json();
+        if (response.ok && data.wtbox_data) {
+            currentSessionId = data.session_id; currentWtboxData = data.wtbox_data;
+            renderWtboxTable(currentWtboxData); wtboxSection.style.display = 'block';
+            bagPanelContent.innerHTML = 'Click on any marking in the <strong>Bag Marking</strong> column to see details.';
+            showSuccess('Files processed. Edit WT‑Box as needed.');
+        } else { showError(data.error || 'Processing failed.'); }
+    } catch (err) { showError('Network error.'); }
+    finally { processUploadBtn.disabled = false; spinner.classList.remove('active'); }
+});
+generateManifestBtn.addEventListener('click', async () => {
+    if (!currentSessionId || !currentWtboxData) { showError('No WT‑Box data.'); return; }
+    const isBagBased = document.getElementById('bagBasedToggle').checked;
+    generateManifestBtn.disabled = true; generateManifestBtn.textContent = 'Preparing...';
+    try {
+        const previewRes = await fetch('/preview_bag_parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: currentSessionId, data: currentWtboxData, is_bag_based: isBagBased, max_box_per_part: getMaxBoxPerPart() }) });
+        const previewData = await previewRes.json();
+        if (!previewRes.ok) throw new Error(previewData.error || 'Could not preview the split.');
+        const partCount = previewData.part_count;
+        if (!partCount) { showError('No data to generate a manifest from.'); return; }
+        generateManifestBtn.disabled = false; generateManifestBtn.textContent = '🚀 Generate Custom Manifest';
+        await showInvoiceModal(partCount, isBagBased, async (invoices) => {
+            generateManifestBtn.disabled = true; generateManifestBtn.textContent = 'Generating...';
+            try {
+                const response = await fetch('/generate_manifest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: currentSessionId, data: currentWtboxData, is_bag_based: isBagBased, invoice_numbers: invoices, max_box_per_part: getMaxBoxPerPart() }) });
+                const data = await response.json();
+                if (response.ok && data.files) { displayFiles(data.files, data.session_id); showSuccess(`Generated ${data.files.length} manifests.`); }
+                else { showError(data.error || 'Generation failed.'); }
+            } catch (err) { showError('Error generating manifests.'); }
+            finally { generateManifestBtn.disabled = false; generateManifestBtn.textContent = '🚀 Generate Custom Manifest'; }
+        });
+    } catch (err) {
+        showError(err.message || 'Could not preview the split.');
+        generateManifestBtn.disabled = false; generateManifestBtn.textContent = '🚀 Generate Custom Manifest';
+    }
+});
+function displayFiles(files, sessionId) {
+    fileGrid.innerHTML = '';
+    files.forEach(file => {
+        const card = document.createElement('div'); card.style.padding = '0.5rem'; card.style.border = '1px solid #e4e6eb'; card.style.borderRadius = '8px';
+        const chamberFileId = file.type === 'bag' ? `${sessionId}_bag_chamber_${file.part_number}` : `${sessionId}_orig_chamber_${file.part_number}`;
+        card.innerHTML = `<div><span>📎</span> ${escapeHtml(file.name)}</div><div><a href="/download/${file.id}" style="margin-right:1rem;">⬇ Download</a><button class="chamber-btn" data-chamber-id="${chamberFileId}">📜 Chamber</button></div>`;
+        fileGrid.appendChild(card);
+    });
+    document.querySelectorAll('.chamber-btn').forEach(btn => {
+        btn.addEventListener('click', () => window.location.href = `/chamber_certificate/${btn.getAttribute('data-chamber-id')}`);
+    });
+    downloadAllZipBtn.onclick = () => window.location.href = `/download_all/${sessionId}`;
+    fileListSection.style.display = 'block';
+}
+saveWtboxBtn.addEventListener('click', async () => {
+    if (!currentSessionId || !currentWtboxData) { showError('No WT‑Box data.'); return; }
+    saveWtboxBtn.disabled = true; saveWtboxBtn.textContent = 'Saving...';
+    try {
+        const response = await fetch('/save_wtbox', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: currentSessionId, data: currentWtboxData }) });
+        if (response.ok) {
+            const blob = await response.blob(); const url = URL.createObjectURL(blob);
+            const a = document.createElement('a'); a.href = url; a.download = 'WT_Box_Report.xlsx';
+            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+            showSuccess('WT‑Box saved and downloaded.');
+        } else { const err = await response.json(); showError(err.error || 'Save failed.'); }
+    } catch (err) { showError('Error saving WT‑Box.'); }
+    finally { saveWtboxBtn.disabled = false; saveWtboxBtn.textContent = '💾 Save WT‑Box to Excel'; }
+});
+
+// ============================ TRACKING TAB LOGIC ============================
+const trackingFileInput = document.getElementById('trackingFile');
+const trackingFileNameSpan = document.getElementById('trackingFileName');
+const processTrackingBtn = document.getElementById('processTrackingBtn');
+const trackingSpinner = document.getElementById('trackingSpinner');
+const trackingResults = document.getElementById('trackingResults');
+const trackingTableBody = document.querySelector('#trackingTable tbody');
+const filterCountryEl = document.getElementById('filterCountry');
+const filterServiceEl = document.getElementById('filterService');
+const downloadSelectedBtn = document.getElementById('downloadSelectedBtn');
+const downloadAllTrackingBtn = document.getElementById('downloadAllTrackingBtn');
+const generateQRBtn = document.getElementById('generateQRBtn');
+const selectAllCheckboxEl = document.getElementById('selectAllCheckbox');
+
+let trackingSessionId = null;
+let allTrackingRows = [];
+let currentReference = 'report';
+
+trackingFileInput.addEventListener('change', () => handleFileSelect(trackingFileInput, trackingFileNameSpan));
+setupDrop(document.getElementById('trackingUploadBox'), trackingFileInput, trackingFileNameSpan);
+
+function simplifyService(raw) {
+    if (!raw) return 'Standard';
+    const s = raw.toString().toLowerCase();
+    if (s.includes('dpd.co.uk')) return 'DPD UK';
+    if (s.includes('dpd.de') || s.includes('tracking.dpd.de')) return 'DPD';
+    if (s.includes('dhl.com')) return 'DHL';
+    if (s.includes('ups.com')) return 'UPS';
+    if (s.startsWith('http')) {
+        try { return new URL(raw).hostname.replace('www.', ''); } catch(e) { return raw; }
+    }
+    return raw;
+}
+
+function renderTrackingTable() {
+    const countryF = filterCountryEl.value;
+    const serviceF = filterServiceEl.value;
+    trackingTableBody.innerHTML = '';
+    allTrackingRows.forEach((row, idx) => {
+        if (countryF && row.country !== countryF) return;
+        if (serviceF && row.service !== serviceF) return;
+        const tr = document.createElement('tr');
+        const cbTd = document.createElement('td');
+        cbTd.classList.add('checkbox-col');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.classList.add('row-checkbox');
+        cb.dataset.index = idx;
+        cbTd.appendChild(cb);
+        tr.appendChild(cbTd);
+        const tdCountry = document.createElement('td'); tdCountry.textContent = row.country;
+        const tdService = document.createElement('td'); tdService.textContent = row.service;
+        const tdHawb = document.createElement('td'); tdHawb.textContent = row.hawb;
+        const tdConsignee = document.createElement('td'); tdConsignee.textContent = row.consignee;
+        const tdTracking = document.createElement('td'); tdTracking.textContent = row.forwarding_number;
+        const tdStatus = document.createElement('td'); tdStatus.innerHTML = '<span class="status-badge">—</span>';
+        const tdPcs = document.createElement('td'); tdPcs.textContent = row.pcs;
+        tr.appendChild(tdCountry);
+        tr.appendChild(tdService);
+        tr.appendChild(tdHawb);
+        tr.appendChild(tdConsignee);
+        tr.appendChild(tdTracking);
+        tr.appendChild(tdStatus);
+        tr.appendChild(tdPcs);
+        trackingTableBody.appendChild(tr);
+    });
+    updateSelectAllState();
+}
+
+function updateSelectAllState() {
+    const allCBs = document.querySelectorAll('.row-checkbox');
+    const someChecked = Array.from(allCBs).some(cb => cb.checked);
+    const allChecked = allCBs.length > 0 && Array.from(allCBs).every(cb => cb.checked);
+    if (selectAllCheckboxEl) {
+        selectAllCheckboxEl.checked = allChecked;
+        selectAllCheckboxEl.indeterminate = !allChecked && someChecked;
+    }
+}
+
+if (selectAllCheckboxEl) {
+    selectAllCheckboxEl.addEventListener('change', (e) => {
+        const isChecked = e.target.checked;
+        document.querySelectorAll('.row-checkbox').forEach(cb => cb.checked = isChecked);
+    });
+}
+
+document.addEventListener('change', (e) => {
+    if (e.target.classList && e.target.classList.contains('row-checkbox')) {
+        updateSelectAllState();
+    }
+});
+
+function populateFilters() {
+    const countries = [...new Set(allTrackingRows.map(r => r.country))].sort();
+    const services = [...new Set(allTrackingRows.map(r => r.service))].sort();
+    filterCountryEl.innerHTML = '<option value="">All Countries</option>';
+    countries.forEach(c => { const opt = document.createElement('option'); opt.value = c; opt.textContent = c; filterCountryEl.appendChild(opt); });
+    filterServiceEl.innerHTML = '<option value="">All Services</option>';
+    services.forEach(s => { const opt = document.createElement('option'); opt.value = s; opt.textContent = s; filterServiceEl.appendChild(opt); });
+}
+
+processTrackingBtn.addEventListener('click', async () => {
+    if (!trackingFileInput.files.length) { showTrackingError('Please upload the MAWB Excel file.'); return; }
+    trackingResults.style.display = 'none';
+    processTrackingBtn.disabled = true; trackingSpinner.classList.add('active');
+    const formData = new FormData();
+    formData.append('mawb', trackingFileInput.files[0]);
+    try {
+        const response = await fetch('/tracking/upload', { method: 'POST', body: formData });
+        const data = await response.json();
+        if (response.ok && data.grouped_data) {
+            trackingSessionId = data.session_id;
+            currentReference = data.reference || 'report';
+            allTrackingRows = [];
+            data.grouped_data.forEach(country => {
+                country.services.forEach(service => {
+                    const cleanService = simplifyService(service.service);
+                    service.rows.forEach(row => {
+                        allTrackingRows.push({
+                            country: country.country,
+                            service: cleanService,
+                            hawb: row.hawb,
+                            consignee: row.consignee,
+                            forwarding_number: row.forwarding_number,
+                            pcs: row.pcs
+                        });
+                    });
+                });
+            });
+            renderTrackingTable();
+            populateFilters();
+            trackingResults.style.display = 'block';
+            showTrackingSuccess('Data loaded. Select rows and export to Excel or generate QR sheet.');
+        } else {
+            showTrackingError(data.error || 'Processing failed.');
+        }
+    } catch (err) { showTrackingError('Network error.'); }
+    finally { processTrackingBtn.disabled = false; trackingSpinner.classList.remove('active'); }
+});
+
+function getSelectedRowsData() {
+    const selected = [];
+    const countryF = filterCountryEl.value;
+    const serviceF = filterServiceEl.value;
+    const visibleIndices = [];
+    allTrackingRows.forEach((row, idx) => {
+        if (countryF && row.country !== countryF) return;
+        if (serviceF && row.service !== serviceF) return;
+        visibleIndices.push(idx);
+    });
+    const checkedIndices = [];
+    document.querySelectorAll('.row-checkbox:checked').forEach(cb => {
+        const idx = parseInt(cb.dataset.index);
+        if (!isNaN(idx) && visibleIndices.includes(idx)) checkedIndices.push(idx);
+    });
+    return checkedIndices.map(idx => {
+        const r = allTrackingRows[idx];
+        return {
+            tracking_number: r.forwarding_number,
+            hawb: r.hawb,
+            consignee_name: r.consignee,
+            country: r.country,
+            pcs: r.pcs,
+            status: '',
+            service: r.service
+        };
+    });
+}
+
+downloadSelectedBtn.addEventListener('click', async () => {
+    const selected = getSelectedRowsData();
+    if (selected.length === 0) {
+        showTrackingError('No rows selected.');
+        return;
+    }
+    try {
+        const response = await fetch('/tracking/download_selected', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session_id: trackingSessionId, selected_rows: selected })
+        });
+        if (response.ok) {
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `selected_tracking_${currentReference}.xlsx`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showTrackingSuccess(`Downloaded ${selected.length} rows.`);
+        } else {
+            showTrackingError('Download failed.');
+        }
+    } catch (err) {
+        showTrackingError('Network error.');
+    }
+});
+
+downloadAllTrackingBtn.addEventListener('click', () => {
+    if (!trackingSessionId) {
+        showTrackingError('No data loaded.');
+        return;
+    }
+    window.location.href = `/tracking/download/${trackingSessionId}`;
+});
+
+// ============================ QR CODE GENERATION ============================
+generateQRBtn.addEventListener('click', () => {
+    const selected = getSelectedRowsData();
+    const rowsToUse = selected.length > 0 ? selected : allTrackingRows.map(r => ({
+        tracking_number: r.forwarding_number,
+        hawb: r.hawb,
+        consignee_name: r.consignee,
+        country: r.country,
+        pcs: r.pcs,
+        status: '',
+        service: r.service
+    }));
+    if (rowsToUse.length === 0) {
+        showTrackingError('No data to generate QR codes.');
+        return;
+    }
+    generateQRSheet(rowsToUse);
+});
+
+function generateQRSheet(rows) {
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write('<html><head><title>Tracking QR Codes</title>');
+    printWindow.document.write('<style>');
+    printWindow.document.write(`
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .qr-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 30px;
+            page-break-inside: avoid;
+        }
+        .qr-card {
+            text-align: center;
+            border: 1px solid #ccc;
+            padding: 15px;
+            border-radius: 8px;
+            break-inside: avoid;
+            page-break-inside: avoid;
+        }
+        .qr-code {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 10px;
+        }
+        .qr-info {
+            font-size: 12px;
+            margin-top: 5px;
+        }
+        .qr-info p {
+            margin: 2px 0;
+        }
+        @media print {
+            .qr-grid {
+                grid-template-columns: repeat(3, 1fr);
+                gap: 20px;
+            }
+            .qr-card {
+                border: none;
+                page-break-inside: avoid;
+            }
+            body {
+                margin: 0;
+                padding: 10px;
+            }
+        }
+    `);
+    printWindow.document.write('</style>');
+    printWindow.document.write('<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"><\/script>');
+    printWindow.document.write('</head><body>');
+    printWindow.document.write('<h2>Tracking QR Codes</h2>');
+    printWindow.document.write('<div class="qr-grid" id="qrGrid"></div>');
+    printWindow.document.write('</body></html>');
+    printWindow.document.close();
+
+    setTimeout(() => {
+        const grid = printWindow.document.getElementById('qrGrid');
+        rows.forEach(row => {
+            const card = printWindow.document.createElement('div');
+            card.className = 'qr-card';
+            const qrDiv = printWindow.document.createElement('div');
+            qrDiv.className = 'qr-code';
+            qrDiv.id = `qr-${row.tracking_number.replace(/[^a-zA-Z0-9]/g, '_')}`;
+            card.appendChild(qrDiv);
+            const infoDiv = printWindow.document.createElement('div');
+            infoDiv.className = 'qr-info';
+            infoDiv.innerHTML = `
+                <p><strong>Tracking:</strong> ${escapeHtml(row.tracking_number)}</p>
+                <p><strong>Service:</strong> ${escapeHtml(row.service)}</p>
+                <p><strong>Name:</strong> ${escapeHtml(row.consignee_name)}</p>
+            `;
+            card.appendChild(infoDiv);
+            grid.appendChild(card);
+            new printWindow.QRCode(qrDiv, {
+                text: row.tracking_number,
+                width: 150,
+                height: 150,
+                colorDark: "#000000",
+                colorLight: "#ffffff",
+                correctLevel: printWindow.QRCode.CorrectLevel.H
+            });
+        });
+    }, 200);
+}
+
+filterCountryEl.addEventListener('change', renderTrackingTable);
+filterServiceEl.addEventListener('change', renderTrackingTable);
+
+// ============================ PWA INSTALL BUTTON LOGIC ============================
+let deferredPrompt;
+window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    const installBtn = document.getElementById('installBtn');
+    if (installBtn) {
+        installBtn.style.display = 'block';
+        installBtn.onclick = () => {
+            if (deferredPrompt) {
+                deferredPrompt.prompt();
+                deferredPrompt.userChoice.then((choiceResult) => {
+                    if (choiceResult.outcome === 'accepted') {
+                        console.log('User accepted the install prompt');
+                    } else {
+                        console.log('User dismissed the install prompt');
+                    }
+                    deferredPrompt = null;
+                    installBtn.style.display = 'none';
+                });
+            }
+        };
+    }
+});
+
+// Service Worker Registration (only if service worker file exists)
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/service-worker.js')
+        .then(reg => console.log('Service Worker registered', reg))
+        .catch(err => console.log('Service Worker registration failed', err));
+}
+</script>
+</body>
+</html>
