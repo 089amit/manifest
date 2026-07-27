@@ -44,7 +44,6 @@ if IS_VERCEL:
     TEMP_FOLDER = os.path.join('/tmp', TEMP_FOLDER)
     PERSISTENT_DATA_FOLDER = os.path.join('/tmp', PERSISTENT_DATA_FOLDER)
 
-
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(TEMP_FOLDER, exist_ok=True)
