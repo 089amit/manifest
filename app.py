@@ -33,21 +33,29 @@ TEMP_FOLDER = 'temp_files'
 # the last-used manifest/invoice number, unlike TEMP_FOLDER which is wiped hourly.
 PERSISTENT_DATA_FOLDER = 'persistent_data'
 
-# On Vercel the deployment filesystem is read-only except /tmp, and /tmp is
-# wiped between cold starts and NOT shared across function instances - so
-# this only prevents a crash, it does not make session data durable there.
-# See deployment notes for why a traditional host suits this app better.
-IS_VERCEL = bool(os.environ.get('VERCEL'))
-if IS_VERCEL:
+# Serverless hosts like Vercel have a read-only filesystem everywhere except
+# /tmp. Rather than rely on a platform env var (which may not even be exposed
+# unless explicitly enabled in project settings), detect this directly: try
+# the normal relative folders, and only fall back to /tmp if that actually
+# fails. /tmp there is writable but ephemeral and not shared across function
+# instances - see deployment notes for why a traditional host suits this
+# app's session-based workflow better.
+IS_VERCEL = False
+try:
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    os.makedirs(TEMP_FOLDER, exist_ok=True)
+    os.makedirs(PERSISTENT_DATA_FOLDER, exist_ok=True)
+except OSError:
+    IS_VERCEL = True
     UPLOAD_FOLDER = os.path.join('/tmp', UPLOAD_FOLDER)
     OUTPUT_FOLDER = os.path.join('/tmp', OUTPUT_FOLDER)
     TEMP_FOLDER = os.path.join('/tmp', TEMP_FOLDER)
     PERSISTENT_DATA_FOLDER = os.path.join('/tmp', PERSISTENT_DATA_FOLDER)
-
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-os.makedirs(TEMP_FOLDER, exist_ok=True)
-os.makedirs(PERSISTENT_DATA_FOLDER, exist_ok=True)
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    os.makedirs(TEMP_FOLDER, exist_ok=True)
+    os.makedirs(PERSISTENT_DATA_FOLDER, exist_ok=True)
 
 LAST_MANIFEST_NUMBER_FILE = os.path.join(PERSISTENT_DATA_FOLDER, 'last_manifest_number.json')
 
