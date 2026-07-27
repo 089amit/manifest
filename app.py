@@ -33,6 +33,17 @@ TEMP_FOLDER = 'temp_files'
 # the last-used manifest/invoice number, unlike TEMP_FOLDER which is wiped hourly.
 PERSISTENT_DATA_FOLDER = 'persistent_data'
 
+# On Vercel the deployment filesystem is read-only except /tmp, and /tmp is
+# wiped between cold starts and NOT shared across function instances - so
+# this only prevents a crash, it does not make session data durable there.
+# See deployment notes for why a traditional host suits this app better.
+IS_VERCEL = bool(os.environ.get('VERCEL'))
+if IS_VERCEL:
+    UPLOAD_FOLDER = os.path.join('/tmp', UPLOAD_FOLDER)
+    OUTPUT_FOLDER = os.path.join('/tmp', OUTPUT_FOLDER)
+    TEMP_FOLDER = os.path.join('/tmp', TEMP_FOLDER)
+    PERSISTENT_DATA_FOLDER = os.path.join('/tmp', PERSISTENT_DATA_FOLDER)
+
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 os.makedirs(TEMP_FOLDER, exist_ok=True)
@@ -1323,7 +1334,8 @@ def cleanup_temp_files():
             if os.path.isdir(folder_path):
                 if time.time() - os.path.getmtime(folder_path) > 3600:
                     shutil.rmtree(folder_path, ignore_errors=True)
-threading.Thread(target=cleanup_temp_files, daemon=True).start()
+if not IS_VERCEL:
+    threading.Thread(target=cleanup_temp_files, daemon=True).start()
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)

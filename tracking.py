@@ -13,7 +13,7 @@ from openpyxl.worksheet.hyperlink import Hyperlink
 
 tracking_bp = Blueprint('tracking_mod', __name__)
 
-TEMP_FOLDER = 'temp_files'
+TEMP_FOLDER = os.path.join('/tmp', 'temp_files') if os.environ.get('VERCEL') else 'temp_files'
 
 COLUMNS_NEEDED = {
     'HAWB': 'hawb',
