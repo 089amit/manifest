@@ -866,13 +866,14 @@ def build_bag_rows(bag_groups, unassigned_hawbs):
         if len(rows_list) > 1:
             total_weight = sum(float(r['Actual WT']) for r in rows_list)
             total_usd = sum(float(r['GBP']) for r in rows_list)
+            total_pcs = sum(int(r['NO OF PCS']) for r in rows_list)
             first_row = rows_list[0]
             descriptions = set(str(r['Goods Description']) for r in rows_list if pd.notna(r['Goods Description']))
             combined_desc = ', '.join(descriptions) if descriptions else ''
             bag_rows.append({
                 'BOX_RANGE': bag,
                 'HAWB#': bag,
-                'NO OF PCS': 1,
+                'NO OF PCS': total_pcs,
                 'Actual WT': total_weight,
                 'GBP': total_usd,
                 'CONSIGNER': first_row['CONSIGNER'],
@@ -1044,7 +1045,24 @@ def generate_manifest():
                         part_bag_narration.append(f"{bag_label} ({', '.join(hawb_list)})")
             narration_text = '\n'.join(part_bag_narration) if part_bag_narration else ''
 
-            itemised_df = create_itemised_sheet(part_df, use_bag_labels=True, bag_map=hawb_to_bag_for_packing)
+            # Rebuild the REAL per-HAWB rows for this part's packing list.
+            # part_df has one row per bag (collapsed, deduplicated description,
+            # no per-HAWB detail) - expand consolidated bags back to their
+            # original HAWB rows so the itemised sheet shows genuine per-HAWB
+            # items/pcs with a "Console Bag: <label>" note, exactly like the
+            # non-bag-based branch does. Standalone marked HAWBs (single-row
+            # "bags", e.g. box ranges) and unassigned HAWBs already ARE real
+            # rows in part_df, so they pass through unchanged.
+            real_rows_for_part = []
+            for _, row in part_df.iterrows():
+                label = row['HAWB#']
+                if label in consolidated_labels:
+                    real_rows_for_part.extend(bag_groups[label])
+                else:
+                    real_rows_for_part.append(row)
+            real_part_df = pd.DataFrame(real_rows_for_part)
+
+            itemised_df = create_itemised_sheet(real_part_df, console_bag_notes=hawb_to_bag_for_packing)
             out_path, filename = save_excel_for_part(part_df, itemised_df, idx, invoice_date, session_dir, inv_num, narration_text)
             file_id = f"{session_id}_bag_{idx}"
             download_files[file_id] = {'path': out_path, 'name': filename, 'invoice_number': inv_num}
