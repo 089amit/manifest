@@ -1,5 +1,6 @@
 print("App is starting...")
 from flask import Flask, request, render_template, send_file, jsonify, redirect, url_for, session
+import requests
 from functools import wraps
 import pandas as pd
 import os
@@ -59,8 +60,56 @@ except OSError:
 
 LAST_MANIFEST_NUMBER_FILE = os.path.join(PERSISTENT_DATA_FOLDER, 'last_manifest_number.json')
 
+# On Vercel, PERSISTENT_DATA_FOLDER may resolve to /tmp, which is wiped
+# between cold starts and not shared across function instances - so these
+# two small settings live in Upstash Redis instead when it's configured
+# (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN, auto-added by Vercel's
+# Storage > Upstash integration). Falls back to the local JSON file when
+# Redis isn't configured (e.g. running locally), so behavior is unchanged
+# there.
+UPSTASH_URL = os.environ.get('UPSTASH_REDIS_REST_URL')
+UPSTASH_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN')
+
+def _redis_get(key):
+    """Returns the stored string value, or None if Redis isn't configured,
+    the key doesn't exist, or the request fails."""
+    if not (UPSTASH_URL and UPSTASH_TOKEN):
+        return None
+    try:
+        resp = requests.get(
+            f"{UPSTASH_URL}/get/{key}",
+            headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
+            timeout=5
+        )
+        resp.raise_for_status()
+        return resp.json().get('result')
+    except Exception:
+        app.logger.exception(f"Upstash GET failed for '{key}'")
+        return None
+
+def _redis_set(key, value):
+    """Returns True on success, False if Redis isn't configured or the
+    request fails (caller should fall back to the local file in that case)."""
+    if not (UPSTASH_URL and UPSTASH_TOKEN):
+        return False
+    try:
+        resp = requests.post(
+            f"{UPSTASH_URL}/set/{key}",
+            headers={"Authorization": f"Bearer {UPSTASH_TOKEN}"},
+            data=str(value),
+            timeout=5
+        )
+        resp.raise_for_status()
+        return True
+    except Exception:
+        app.logger.exception(f"Upstash SET failed for '{key}'")
+        return False
+
 def get_last_manifest_number():
     """Return the last manifest/invoice number saved, or '' if none yet."""
+    redis_value = _redis_get('last_manifest_number')
+    if redis_value is not None:
+        return redis_value
     if os.path.exists(LAST_MANIFEST_NUMBER_FILE):
         try:
             with open(LAST_MANIFEST_NUMBER_FILE, 'r') as f:
@@ -72,6 +121,8 @@ def get_last_manifest_number():
 def save_last_manifest_number(value):
     """Persist the last manifest/invoice number so the user can continue from there next time."""
     if not value:
+        return
+    if _redis_set('last_manifest_number', value):
         return
     try:
         with open(LAST_MANIFEST_NUMBER_FILE, 'w') as f:
@@ -86,6 +137,12 @@ def get_last_box_limit():
     """Return the last-used 'boxes per custom manifest part' limit, or the
     default if it's never been set. Lets customs limits be changed from the
     UI each month instead of editing code."""
+    redis_value = _redis_get('max_box_per_part')
+    if redis_value is not None:
+        try:
+            return int(redis_value)
+        except (TypeError, ValueError):
+            pass
     if os.path.exists(LAST_BOX_LIMIT_FILE):
         try:
             with open(LAST_BOX_LIMIT_FILE, 'r') as f:
@@ -96,6 +153,8 @@ def get_last_box_limit():
 
 def save_last_box_limit(value):
     """Persist the box-per-part limit so it's remembered next time."""
+    if _redis_set('max_box_per_part', value):
+        return
     try:
         with open(LAST_BOX_LIMIT_FILE, 'w') as f:
             json.dump({'max_box_per_part': int(value), 'updated_at': datetime.now().isoformat()}, f)
@@ -325,9 +384,13 @@ def categorize_description(description):
 
 def create_itemised_sheet(merged_df, use_bag_labels=False, bag_map=None, console_bag_notes=None):
     """
-    console_bag_notes: optional dict {HAWB: bag_label}. When a HAWB has an
-    assigned console bag number, an extra note row ("Console Bag: <label>")
-    is inserted directly under that HAWB's item rows in the packing list.
+    console_bag_notes: optional dict {HAWB: note_text} with the note text
+    already decided by the caller, e.g. {'H1': 'Console Bag: BAG-1'} for a
+    marking that truly combines 2+ HAWBs, or {'H2': 'Bag: 3-12'} for a
+    standalone single-HAWB marking. The note is shown in the HAWB column of
+    that HAWB's SECOND item row (not a trailing row after all items) - if
+    the HAWB has only one item, a dedicated note row is added right after it
+    since there's no second item row to place it in.
     This is independent of use_bag_labels/bag_map, which fully collapses
     rows into bag-level entries for the bag-based invoice mode.
     """
@@ -343,21 +406,28 @@ def create_itemised_sheet(merged_df, use_bag_labels=False, bag_map=None, console
         if not items:
             continue
         n_items = len(items)
+        note_text = console_bag_notes.get(hawb) if console_bag_notes else None
+
         if n_items == 0 or total_usd == 0:
-            for item in items:
+            for i, item in enumerate(items):
                 display_hawb = bag_map.get(hawb, hawb) if use_bag_labels and bag_map else hawb
+                if i == 0:
+                    hawb_cell = display_hawb
+                elif i == 1 and note_text:
+                    hawb_cell = note_text
+                else:
+                    hawb_cell = ''
                 rows.append({
-                    'HAWB': display_hawb if item == items[0] else '',
+                    'HAWB': hawb_cell,
                     'DESCRIPTION': item,
                     'PCS': '',
                     'UNIT VALUE': '',
                     'TOTAL': '',
                     'HSCODE': ''
                 })
-            bag_label = console_bag_notes.get(hawb) if console_bag_notes else None
-            if bag_label:
+            if note_text and n_items < 2:
                 rows.append({
-                    'HAWB': '', 'DESCRIPTION': f'Console Bag: {bag_label}',
+                    'HAWB': note_text, 'DESCRIPTION': '',
                     'PCS': '', 'UNIT VALUE': '', 'TOTAL': '', 'HSCODE': ''
                 })
             if idx != len(merged_sorted) - 1:
@@ -382,23 +452,45 @@ def create_itemised_sheet(merged_df, use_bag_labels=False, bag_map=None, console
         
         for i, item in enumerate(items):
             display_hawb = bag_map.get(hawb, hawb) if use_bag_labels and bag_map else hawb
+            if i == 0:
+                hawb_cell = display_hawb
+            elif i == 1 and note_text:
+                hawb_cell = note_text
+            else:
+                hawb_cell = ''
             rows.append({
-                'HAWB': display_hawb if i == 0 else '',
+                'HAWB': hawb_cell,
                 'DESCRIPTION': item,
                 'PCS': pcs_list[i],
                 'UNIT VALUE': final_unit_values[i],
                 'TOTAL': final_totals[i],
                 'HSCODE': ''
             })
-        bag_label = console_bag_notes.get(hawb) if console_bag_notes else None
-        if bag_label:
+        if note_text and n_items < 2:
             rows.append({
-                'HAWB': '', 'DESCRIPTION': f'Console Bag: {bag_label}',
+                'HAWB': note_text, 'DESCRIPTION': '',
                 'PCS': '', 'UNIT VALUE': '', 'TOTAL': '', 'HSCODE': ''
             })
         if idx != len(merged_sorted) - 1:
             rows.append({'HAWB': '', 'DESCRIPTION': '', 'PCS': '', 'UNIT VALUE': '', 'TOTAL': '', 'HSCODE': ''})
     return pd.DataFrame(rows)
+
+def build_bag_note_map(hawb_to_bag):
+    """Given {HAWB: marking}, return {HAWB: display_note} ready to hand to
+    create_itemised_sheet's console_bag_notes. A marking shared by 2+ HAWBs
+    is a true consolidation -> 'Console Bag: X'. A marking held by exactly
+    one HAWB (e.g. a standalone box-range like '3-12', or any single plain
+    number) is NOT a consolidation -> just 'Bag: X'."""
+    if not hawb_to_bag:
+        return {}
+    counts = {}
+    for marking in hawb_to_bag.values():
+        if marking:
+            counts[marking] = counts.get(marking, 0) + 1
+    return {
+        hawb: (f'Console Bag: {marking}' if counts.get(marking, 0) > 1 else f'Bag: {marking}')
+        for hawb, marking in hawb_to_bag.items() if marking
+    }
 
 DEFAULT_MAX_BAG_WEIGHT = 30.0  # kg - matches "a bag tops out around 30kg" consolidation rule
 
@@ -512,6 +604,8 @@ def split_manifest(merged_df, bag_map=None, max_box_per_part=None):
     def any_left():
         return any(category_queues[c] for c in CATEGORY_ORDER)
 
+    bag_note_map = build_bag_note_map(bag_map)
+
     parts = []
     itemised_parts = []
 
@@ -557,7 +651,7 @@ def split_manifest(merged_df, bag_map=None, max_box_per_part=None):
 
         part_df = df.loc[bin_indices].drop(columns=['_category']).reset_index(drop=True)
         parts.append(part_df)
-        itemised_parts.append(create_itemised_sheet(part_df, console_bag_notes=bag_map))
+        itemised_parts.append(create_itemised_sheet(part_df, console_bag_notes=bag_note_map))
 
     return parts, itemised_parts
 
@@ -866,14 +960,18 @@ def build_bag_rows(bag_groups, unassigned_hawbs):
         if len(rows_list) > 1:
             total_weight = sum(float(r['Actual WT']) for r in rows_list)
             total_usd = sum(float(r['GBP']) for r in rows_list)
-            total_pcs = sum(int(r['NO OF PCS']) for r in rows_list)
             first_row = rows_list[0]
             descriptions = set(str(r['Goods Description']) for r in rows_list if pd.notna(r['Goods Description']))
             combined_desc = ', '.join(descriptions) if descriptions else ''
             bag_rows.append({
                 'BOX_RANGE': bag,
                 'HAWB#': bag,
-                'NO OF PCS': total_pcs,
+                # A console bag is physically ONE box on the manifest, no matter
+                # how many HAWBs/pieces are consolidated inside it. The real
+                # per-HAWB pcs still show correctly in the packing list, which
+                # is rebuilt from the actual HAWB rows further down - this
+                # value only drives the manifest's box count/range.
+                'NO OF PCS': 1,
                 'Actual WT': total_weight,
                 'GBP': total_usd,
                 'CONSIGNER': first_row['CONSIGNER'],
@@ -1017,10 +1115,13 @@ def generate_manifest():
         invoice_date_path = os.path.join(session_dir, 'invoice_date.txt')
         invoice_date = open(invoice_date_path).read().strip() if os.path.exists(invoice_date_path) else datetime.now().strftime('%d-%m-%Y')
 
-        hawb_to_bag_for_packing = {}
-        for bag, rows_list in bag_groups.items():
-            for row in rows_list:
-                hawb_to_bag_for_packing[row['HAWB#']] = bag
+        # Console Bag: vs Bag: is decided the same way build_bag_note_map does,
+        # but computed directly from bag_groups since we already know exactly
+        # which markings combine 2+ HAWBs here.
+        hawb_to_note = {
+            row['HAWB#']: (f'Console Bag: {bag}' if len(rows_list) > 1 else f'Bag: {bag}')
+            for bag, rows_list in bag_groups.items() for row in rows_list
+        }
 
         # A marking backed by more than one HAWB is a true consolidated bag
         # (its row's HAWB# was replaced by the bag label itself); a marking
@@ -1062,7 +1163,7 @@ def generate_manifest():
                     real_rows_for_part.append(row)
             real_part_df = pd.DataFrame(real_rows_for_part)
 
-            itemised_df = create_itemised_sheet(real_part_df, console_bag_notes=hawb_to_bag_for_packing)
+            itemised_df = create_itemised_sheet(real_part_df, console_bag_notes=hawb_to_note)
             out_path, filename = save_excel_for_part(part_df, itemised_df, idx, invoice_date, session_dir, inv_num, narration_text)
             file_id = f"{session_id}_bag_{idx}"
             download_files[file_id] = {'path': out_path, 'name': filename, 'invoice_number': inv_num}
