@@ -4,7 +4,7 @@ import uuid
 import re
 import pandas as pd
 from flask import Blueprint, request, jsonify, send_file
-from utils import extract_mawb_columns
+from utils import extract_mawb_columns, ensure_dir
 import io
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font
@@ -13,12 +13,10 @@ from openpyxl.worksheet.hyperlink import Hyperlink
 
 tracking_bp = Blueprint('tracking_mod', __name__)
 
+# Not resolved once at import time - see ensure_dir() in utils.py for why
+# that isn't reliable on Vercel. session_dir below is passed through
+# ensure_dir() on every request instead, right before it's actually used.
 TEMP_FOLDER = 'temp_files'
-try:
-    os.makedirs(TEMP_FOLDER, exist_ok=True)
-except OSError:
-    TEMP_FOLDER = os.path.join('/tmp', TEMP_FOLDER)
-    os.makedirs(TEMP_FOLDER, exist_ok=True)
 
 COLUMNS_NEEDED = {
     'HAWB': 'hawb',
@@ -94,6 +92,19 @@ def simplify_service_for_display(service):
             return "Tracking Link"
     return service
 
+def _resolve_session_dir(session_id):
+    """For read-only lookups (data/download endpoints): the session's upload
+    request may have had TEMP_FOLDER redirected to /tmp by ensure_dir() while
+    this request didn't hit that redirect (or vice versa) - check both so a
+    session created under either path is still found."""
+    primary = os.path.join(TEMP_FOLDER, f'tracking_{session_id}')
+    if os.path.exists(primary):
+        return primary
+    fallback = os.path.join('/tmp', TEMP_FOLDER, f'tracking_{session_id}')
+    if os.path.exists(fallback):
+        return fallback
+    return primary  # neither exists - let the caller's own 404 handling take over
+
 @tracking_bp.route('/tracking/upload', methods=['POST'])
 def tracking_upload():
     mawb_file = request.files.get('mawb')
@@ -101,8 +112,7 @@ def tracking_upload():
         return jsonify({'error': 'Please upload the MAWB file.'}), 400
 
     session_id = str(uuid.uuid4())
-    session_dir = os.path.join(TEMP_FOLDER, f'tracking_{session_id}')
-    os.makedirs(session_dir, exist_ok=True)
+    session_dir = ensure_dir(os.path.join(TEMP_FOLDER, f'tracking_{session_id}'))
 
     filepath = os.path.join(session_dir, mawb_file.filename)
     mawb_file.save(filepath)
@@ -122,7 +132,7 @@ def tracking_upload():
 
 @tracking_bp.route('/tracking/data/<session_id>', methods=['GET'])
 def tracking_data(session_id):
-    session_dir = os.path.join(TEMP_FOLDER, f'tracking_{session_id}')
+    session_dir = _resolve_session_dir(session_id)
     csv_path = os.path.join(session_dir, 'tracking_data.csv')
     if not os.path.exists(csv_path):
         return jsonify({'error': 'Session not found'}), 404
@@ -133,7 +143,7 @@ def tracking_data(session_id):
 @tracking_bp.route('/tracking/download/<session_id>', methods=['GET'])
 def tracking_download(session_id):
     """Generate Excel file with auto-filters, column width, text formatting, and clickable links in Service column."""
-    session_dir = os.path.join(TEMP_FOLDER, f'tracking_{session_id}')
+    session_dir = _resolve_session_dir(session_id)
     csv_path = os.path.join(session_dir, 'tracking_data.csv')
     ref_path = os.path.join(session_dir, 'reference.txt')
     if not os.path.exists(csv_path):
@@ -303,7 +313,7 @@ def tracking_download_selected():
     output.seek(0)
 
     # Get reference for filename
-    session_dir = os.path.join(TEMP_FOLDER, f'tracking_{session_id}')
+    session_dir = _resolve_session_dir(session_id)
     ref_path = os.path.join(session_dir, 'reference.txt')
     reference = "report"
     if os.path.exists(ref_path):

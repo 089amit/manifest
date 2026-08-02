@@ -12,6 +12,7 @@ import random
 import json
 import re
 from tracking import tracking_bp
+from utils import ensure_dir
 from datetime import datetime
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Alignment, Font, Border, Side
@@ -27,36 +28,19 @@ from tracking import tracking_bp
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'your-secret-key-change-in-production')
 
-UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'outputs'
-TEMP_FOLDER = 'temp_files'
+# Best-effort default for the app's lifetime. On some serverless hosts
+# (Vercel included) the filesystem available at import/cold-start time can
+# differ from the one available while an actual request is served, so this
+# initial check isn't a guarantee - see ensure_dir() in utils.py. Anywhere a
+# directory actually gets created per-request, it's passed through
+# ensure_dir() again right before use, which is the check that actually
+# matters.
+UPLOAD_FOLDER = ensure_dir('uploads')
+OUTPUT_FOLDER = ensure_dir('outputs')
+TEMP_FOLDER = ensure_dir('temp_files')
 # Not cleaned up by cleanup_temp_files() - holds small persistent settings like
 # the last-used manifest/invoice number, unlike TEMP_FOLDER which is wiped hourly.
-PERSISTENT_DATA_FOLDER = 'persistent_data'
-
-# Serverless hosts like Vercel have a read-only filesystem everywhere except
-# /tmp. Rather than rely on a platform env var (which may not even be exposed
-# unless explicitly enabled in project settings), detect this directly: try
-# the normal relative folders, and only fall back to /tmp if that actually
-# fails. /tmp there is writable but ephemeral and not shared across function
-# instances - see deployment notes for why a traditional host suits this
-# app's session-based workflow better.
-IS_VERCEL = False
-try:
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-    os.makedirs(TEMP_FOLDER, exist_ok=True)
-    os.makedirs(PERSISTENT_DATA_FOLDER, exist_ok=True)
-except OSError:
-    IS_VERCEL = True
-    UPLOAD_FOLDER = os.path.join('/tmp', UPLOAD_FOLDER)
-    OUTPUT_FOLDER = os.path.join('/tmp', OUTPUT_FOLDER)
-    TEMP_FOLDER = os.path.join('/tmp', TEMP_FOLDER)
-    PERSISTENT_DATA_FOLDER = os.path.join('/tmp', PERSISTENT_DATA_FOLDER)
-    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-    os.makedirs(TEMP_FOLDER, exist_ok=True)
-    os.makedirs(PERSISTENT_DATA_FOLDER, exist_ok=True)
+PERSISTENT_DATA_FOLDER = ensure_dir('persistent_data')
 
 LAST_MANIFEST_NUMBER_FILE = os.path.join(PERSISTENT_DATA_FOLDER, 'last_manifest_number.json')
 
@@ -174,6 +158,7 @@ def get_session_bag_markings(session_dir):
 
 def save_session_bag_markings(session_dir, mapping):
     """Persist the {HAWB: marking} map for a session (only non-empty values)."""
+    session_dir = ensure_dir(session_dir)
     path = os.path.join(session_dir, 'bag_markings.json')
     clean = {h: b for h, b in mapping.items() if b not in (None, '')}
     try:
@@ -908,8 +893,7 @@ def upload_and_prepare():
         merged = merged.sort_values('HAWB#').reset_index(drop=True)
 
         session_id = str(uuid.uuid4())
-        session_dir = os.path.join(TEMP_FOLDER, session_id)
-        os.makedirs(session_dir, exist_ok=True)
+        session_dir = ensure_dir(os.path.join(TEMP_FOLDER, session_id))
         merged.to_csv(os.path.join(session_dir, 'merged.csv'), index=False)
         session_merged_data[session_id] = merged
 
@@ -1078,7 +1062,7 @@ def generate_manifest():
             return jsonify({'error': 'max_box_per_part must be a positive integer'}), 400
     save_last_box_limit(max_box_per_part)
 
-    session_dir = os.path.join(TEMP_FOLDER, session_id)
+    session_dir = ensure_dir(os.path.join(TEMP_FOLDER, session_id))
     merged = session_merged_data.get(session_id)
     if merged is None:
         merged_path = os.path.join(session_dir, 'merged.csv')
@@ -1380,8 +1364,7 @@ def save_wtbox():
             cell.alignment = Alignment(wrap_text=True, vertical='top')
     wb.save(output_path)
     os.chmod(output_path, 0o644)
-    session_dir = os.path.join(TEMP_FOLDER, session_id)
-    os.makedirs(session_dir, exist_ok=True)
+    session_dir = ensure_dir(os.path.join(TEMP_FOLDER, session_id))
     shutil.copy(output_path, os.path.join(session_dir, f"WT_Box_Report_{session_id}.xlsx"))
 
     # Persist the Bag Marking assignments (dedicated field, never the Box/pcs
@@ -1461,8 +1444,7 @@ def cleanup_temp_files():
             if os.path.isdir(folder_path):
                 if time.time() - os.path.getmtime(folder_path) > 3600:
                     shutil.rmtree(folder_path, ignore_errors=True)
-if not IS_VERCEL:
-    threading.Thread(target=cleanup_temp_files, daemon=True).start()
+threading.Thread(target=cleanup_temp_files, daemon=True).start()
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
