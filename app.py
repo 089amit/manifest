@@ -46,13 +46,14 @@ LAST_MANIFEST_NUMBER_FILE = os.path.join(PERSISTENT_DATA_FOLDER, 'last_manifest_
 
 # On Vercel, PERSISTENT_DATA_FOLDER may resolve to /tmp, which is wiped
 # between cold starts and not shared across function instances - so these
-# two small settings live in Upstash Redis instead when it's configured
-# (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN, auto-added by Vercel's
-# Storage > Upstash integration). Falls back to the local JSON file when
-# Redis isn't configured (e.g. running locally), so behavior is unchanged
-# there.
-UPSTASH_URL = os.environ.get('UPSTASH_REDIS_REST_URL')
-UPSTASH_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN')
+# two small settings live in Upstash Redis instead when it's configured.
+# Vercel's Storage > Upstash integration names the env vars with the legacy
+# KV_ prefix (KV_REST_API_URL / KV_REST_API_TOKEN) rather than UPSTASH_ -
+# both names are accepted here so this works with either naming. Falls back
+# to the local JSON file when neither is set (e.g. running locally), so
+# behavior is unchanged there.
+UPSTASH_URL = os.environ.get('UPSTASH_REDIS_REST_URL') or os.environ.get('KV_REST_API_URL')
+UPSTASH_TOKEN = os.environ.get('UPSTASH_REDIS_REST_TOKEN') or os.environ.get('KV_REST_API_TOKEN')
 
 def _redis_get(key):
     """Returns the stored string value, or None if Redis isn't configured,
@@ -1422,6 +1423,10 @@ def debug_redis_status():
     result = {
         'upstash_url_set': bool(UPSTASH_URL),
         'upstash_token_set': bool(UPSTASH_TOKEN),
+        'url_source': 'UPSTASH_REDIS_REST_URL' if os.environ.get('UPSTASH_REDIS_REST_URL')
+                       else ('KV_REST_API_URL' if os.environ.get('KV_REST_API_URL') else None),
+        'token_source': 'UPSTASH_REDIS_REST_TOKEN' if os.environ.get('UPSTASH_REDIS_REST_TOKEN')
+                         else ('KV_REST_API_TOKEN' if os.environ.get('KV_REST_API_TOKEN') else None),
         'upstash_configured': configured,
     }
     if configured:
