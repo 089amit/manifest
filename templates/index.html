@@ -567,32 +567,42 @@ async function showInvoiceModal(partCount, isBagBased, callback) {
     modalContent.style.backgroundColor = 'white'; modalContent.style.borderRadius = '20px';
     modalContent.style.padding = '2rem'; modalContent.style.width = '400px'; modalContent.style.maxWidth = '90%';
     modalContent.style.maxHeight = '85vh'; modalContent.style.overflowY = 'auto';
-    modalContent.innerHTML = `<h3>Enter Invoice Numbers</h3><p class="modal-hint">This manifest will be generated as ${partCount} part${partCount > 1 ? 's' : ''}.</p><div id="invoiceInputsContainer"></div><div style="margin-top:1rem; display:flex; gap:1rem;"><button id="confirmInvoiceBtn" class="btn-primary">Confirm</button><button id="closeModalBtn" class="btn-primary" style="background:#ccc;">Cancel</button></div>`;
+    modalContent.innerHTML = `<h3>Enter Invoice Numbers</h3><p class="modal-hint">This manifest will be generated as ${partCount} part${partCount > 1 ? 's' : ''}.</p><div id="lastInvoiceInfo" style="display:none;"></div><div id="invoiceInputsContainer"></div><div style="margin-top:1rem; display:flex; gap:1rem;"><button id="confirmInvoiceBtn" class="btn-primary">Confirm</button><button id="closeModalBtn" class="btn-primary" style="background:#ccc;">Cancel</button></div>`;
     modal.appendChild(modalContent);
     document.body.appendChild(modal);
     const container = document.getElementById('invoiceInputsContainer');
     container.innerHTML = '';
 
-    // Prefill from the last manifest number used, continuing the sequence if it ends in digits.
-    let suggestions = [];
+    // Show the actual last-used invoice number as its own reference line, and
+    // use it only as a placeholder hint on the inputs (not a real prefilled
+    // value) - so it's clearly a suggestion the user can see and override,
+    // never something that silently gets submitted unnoticed.
+    const lastInvoiceInfo = document.getElementById('lastInvoiceInfo');
+    let lastNumber = '';
     try {
         const res = await fetch('/last_manifest_number');
         const data = await res.json();
-        const last = data.last_manifest_number || '';
-        const match = last.match(/^(.*?)(\d+)$/);
-        if (match) {
-            const prefix = match[1]; const pad = match[2].length; let n = parseInt(match[2], 10);
-            for (let i = 0; i < partCount; i++) { n += 1; suggestions.push(prefix + String(n).padStart(pad, '0')); }
-        }
-    } catch (err) { /* non-fatal - fall back to placeholders below */ }
-    if (suggestions.length !== partCount) {
+        lastNumber = data.last_manifest_number || '';
+    } catch (err) { /* non-fatal - falls back to generic placeholders below */ }
+
+    if (lastNumber) {
+        lastInvoiceInfo.style.cssText = 'display:block; background:#f0f2f5; border-radius:8px; padding:0.6rem 0.8rem; margin-bottom:1rem; font-size:0.9rem; color:#444;';
+        lastInvoiceInfo.textContent = `Last invoice number used: ${lastNumber}`;
+    }
+
+    let suggestions = [];
+    const match = lastNumber.match(/^(.*?)(\d+)$/);
+    if (match) {
+        const prefix = match[1]; const pad = match[2].length; let n = parseInt(match[2], 10);
+        for (let i = 0; i < partCount; i++) { n += 1; suggestions.push(prefix + String(n).padStart(pad, '0')); }
+    } else {
         const fallbackPrefix = isBagBased ? 'BAG-' : 'INV-';
         suggestions = Array.from({ length: partCount }, (_, i) => `${fallbackPrefix}${i + 1}`);
     }
 
     for (let i = 1; i <= partCount; i++) {
         const label = document.createElement('label'); label.textContent = `Invoice Number for Part ${i}:`;
-        const input = document.createElement('input'); input.type = 'text'; input.value = suggestions[i - 1]; input.id = `inv_${i}`;
+        const input = document.createElement('input'); input.type = 'text'; input.placeholder = suggestions[i - 1]; input.id = `inv_${i}`;
         input.style.width = '100%'; input.style.padding = '0.5rem'; input.style.marginBottom = '1rem';
         container.appendChild(label); container.appendChild(input);
     }
