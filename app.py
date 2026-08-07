@@ -1412,6 +1412,30 @@ def update_last_manifest_number():
     save_last_manifest_number(value)
     return jsonify({'success': True, 'last_manifest_number': value})
 
+@app.route('/debug/redis_status', methods=['GET'])
+@login_required
+def debug_redis_status():
+    """Diagnostic: shows whether Upstash is actually configured and working,
+    versus silently falling back to the per-instance local file (which won't
+    stay in sync across Vercel's separate function instances)."""
+    configured = bool(UPSTASH_URL and UPSTASH_TOKEN)
+    result = {
+        'upstash_url_set': bool(UPSTASH_URL),
+        'upstash_token_set': bool(UPSTASH_TOKEN),
+        'upstash_configured': configured,
+    }
+    if configured:
+        test_key = 'debug_roundtrip_test'
+        test_value = f'test-{uuid.uuid4().hex[:8]}'
+        set_ok = _redis_set(test_key, test_value)
+        read_back = _redis_get(test_key)
+        result['roundtrip_set_succeeded'] = set_ok
+        result['roundtrip_read_back'] = read_back
+        result['roundtrip_matches'] = (read_back == test_value)
+    result['current_last_manifest_number'] = get_last_manifest_number()
+    result['current_last_box_limit'] = get_last_box_limit()
+    return jsonify(result)
+
 # ---------- Box-per-part limit (change customs limit without touching code) ----------
 @app.route('/last_box_limit', methods=['GET'])
 @login_required
