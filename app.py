@@ -243,6 +243,16 @@ def add_consignee(name, address, country):
     save_consignees(consignees)
     return new_entry, consignees
 
+def delete_consignee(consignee_id):
+    """Remove a consignee from the saved list and persist it. Returns the
+    updated full list, or None if no consignee with that id existed."""
+    consignees = get_consignees()
+    filtered = [c for c in consignees if c.get('id') != consignee_id]
+    if len(filtered) == len(consignees):
+        return None
+    save_consignees(filtered)
+    return filtered
+
 def get_session_bag_markings(session_dir):
     """Read the persisted {HAWB: marking} map for a session, if any."""
     path = os.path.join(session_dir, 'bag_markings.json')
@@ -1796,6 +1806,14 @@ def create_consignee():
         return jsonify({'error': 'country is required'}), 400
     new_entry, consignees = add_consignee(name, address, country)
     return jsonify({'success': True, 'consignee': new_entry, 'consignees': consignees})
+
+@app.route('/consignees/<consignee_id>', methods=['DELETE'])
+@login_required
+def delete_consignee_route(consignee_id):
+    updated = delete_consignee(consignee_id)
+    if updated is None:
+        return jsonify({'error': 'Consignee not found'}), 404
+    return jsonify({'success': True, 'consignees': updated})
 
 # ---------- Register Tracking Blueprint ----------
 app.register_blueprint(tracking_bp)

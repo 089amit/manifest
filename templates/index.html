@@ -237,6 +237,13 @@
             color: #65676b;
             margin-bottom: 0.75rem;
         }
+        .modal-hint { font-size: 0.8rem; color: #65676b; margin-bottom: 0.75rem; }
+        .modal-label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.3rem; }
+        .modal-input {
+            width: 100%; padding: 0.6rem; margin-bottom: 1rem; border: 1px solid #ccd0d5;
+            border-radius: 8px; font-family: inherit; font-size: 0.95rem;
+        }
+        .consignee-row:last-child { border-bottom: none !important; }
 
         /* ---------- Responsive ---------- */
         @media (max-width: 720px) {
@@ -269,6 +276,7 @@
             <h1>📦 Custom Manifest + 📋 Tracking Data</h1>
         </div>
         <button id="installBtn">📲 Install App</button>
+        <button id="manageConsigneesBtn" class="btn-secondary" style="margin-bottom:1.5rem;">🏢 Manage Consignees</button>
         <div class="tabs">
             <button class="tab-btn active" data-tab="manifest">📦 Manifest WT‑Box</button>
             <button class="tab-btn" data-tab="tracking">📍 Tracking Data</button>
@@ -606,6 +614,134 @@ function showAddConsigneeModal() {
 }
 addConsigneeBtn.addEventListener('click', showAddConsigneeModal);
 
+function renderConsigneeListHtml(list) {
+    if (!list || list.length === 0) return '<p style="color:#65676b; font-size:0.9rem;">No consignees saved yet.</p>';
+    return list.map(c => `
+        <div class="consignee-row" data-id="${escapeHtml(c.id)}" style="display:flex; justify-content:space-between; align-items:center; gap:0.75rem; padding:0.6rem 0; border-bottom:1px solid #e4e6eb;">
+            <div>
+                <div style="font-weight:600;">${escapeHtml(c.name)}</div>
+                <div style="font-size:0.8rem; color:#65676b;">${escapeHtml([c.address, c.country].filter(Boolean).join(', '))}</div>
+            </div>
+            <button class="consignee-delete-btn" data-id="${escapeHtml(c.id)}" style="background:#fee4e2; color:#cf222e; border:1px solid #ff4d4f; border-radius:8px; padding:0.4rem 0.7rem; cursor:pointer; font-weight:600; white-space:nowrap;">🗑 Delete</button>
+        </div>
+    `).join('');
+}
+
+async function showManageConsigneesModal() {
+    const modal = document.createElement('div');
+    modal.id = 'manageConsigneesModal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:1000; padding:1rem;';
+    const modalContent = document.createElement('div');
+    modalContent.style.cssText = 'background:white; border-radius:20px; padding:2rem; width:460px; max-width:100%; max-height:85vh; overflow-y:auto;';
+    modalContent.innerHTML = `
+        <h3>🏢 Manage Consignees</h3>
+        <p class="modal-hint">Add or remove consignees here. The dropdown used when generating a manifest updates automatically \u2014 nothing else changes.</p>
+        <div id="manageConsigneeListError" class="message error" style="display:none; margin-bottom:1rem;"></div>
+        <div id="manageConsigneeList" style="margin-bottom:1.5rem;"><p>Loading…</p></div>
+        <h4 style="margin-bottom:0.5rem;">Add New</h4>
+        <label class="modal-label">Name</label>
+        <input type="text" id="mcName" class="modal-input" placeholder="e.g. ESHIPPER EXPRESS COURIER">
+        <label class="modal-label">Address</label>
+        <input type="text" id="mcAddress" class="modal-input" placeholder="Street, city (optional)">
+        <label class="modal-label">Country</label>
+        <input type="text" id="mcCountry" class="modal-input" placeholder="e.g. UK">
+        <div id="manageConsigneeAddError" class="message error" style="display:none; margin-bottom:1rem;"></div>
+        <div style="display:flex; gap:1rem;">
+            <button id="mcAddBtn" class="btn-primary">➕ Add Consignee</button>
+            <button id="mcCloseBtn" class="btn-primary" style="background:#ccc;">Close</button>
+        </div>
+    `;
+    modal.appendChild(modalContent);
+    document.body.appendChild(modal);
+    document.getElementById('mcName').focus();
+
+    const listEl = document.getElementById('manageConsigneeList');
+    const listErrorEl = document.getElementById('manageConsigneeListError');
+
+    async function refreshList() {
+        listEl.innerHTML = '<p>Loading…</p>';
+        try {
+            const res = await fetch('/consignees');
+            const data = await res.json();
+            const list = data.consignees || [];
+            listEl.innerHTML = renderConsigneeListHtml(list);
+            listEl.querySelectorAll('.consignee-delete-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const id = btn.getAttribute('data-id');
+                    const row = btn.closest('.consignee-row');
+                    const rowName = row ? row.querySelector('div > div').textContent : 'this consignee';
+                    if (!confirm(`Delete "${rowName}"? This can't be undone.`)) return;
+                    btn.disabled = true; btn.textContent = 'Deleting…';
+                    try {
+                        const delRes = await fetch(`/consignees/${id}`, { method: 'DELETE' });
+                        const delData = await delRes.json();
+                        if (delRes.ok && delData.success) {
+                            listErrorEl.style.display = 'none';
+                            await refreshList();
+                            await loadConsignees();
+                        } else {
+                            listErrorEl.textContent = delData.error || 'Could not delete consignee.';
+                            listErrorEl.style.display = 'block';
+                            btn.disabled = false; btn.textContent = '🗑 Delete';
+                        }
+                    } catch (err) {
+                        listErrorEl.textContent = 'Network error.';
+                        listErrorEl.style.display = 'block';
+                        btn.disabled = false; btn.textContent = '🗑 Delete';
+                    }
+                });
+            });
+        } catch (err) {
+            listEl.innerHTML = '';
+            listErrorEl.textContent = 'Could not load consignees.';
+            listErrorEl.style.display = 'block';
+        }
+    }
+
+    const close = () => document.body.removeChild(modal);
+    document.getElementById('mcCloseBtn').onclick = close;
+    document.getElementById('mcAddBtn').onclick = async () => {
+        const name = document.getElementById('mcName').value.trim();
+        const address = document.getElementById('mcAddress').value.trim();
+        const country = document.getElementById('mcCountry').value.trim();
+        const errorDiv = document.getElementById('manageConsigneeAddError');
+        if (!name || !country) {
+            errorDiv.textContent = 'Name and Country are required.';
+            errorDiv.style.display = 'block';
+            return;
+        }
+        const addBtn = document.getElementById('mcAddBtn');
+        addBtn.disabled = true; addBtn.textContent = 'Adding…';
+        try {
+            const res = await fetch('/consignees', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, address, country })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                errorDiv.style.display = 'none';
+                document.getElementById('mcName').value = '';
+                document.getElementById('mcAddress').value = '';
+                document.getElementById('mcCountry').value = '';
+                await refreshList();
+                await loadConsignees(data.consignee.id);
+            } else {
+                errorDiv.textContent = data.error || 'Could not save consignee.';
+                errorDiv.style.display = 'block';
+            }
+        } catch (err) {
+            errorDiv.textContent = 'Network error.';
+            errorDiv.style.display = 'block';
+        } finally {
+            addBtn.disabled = false; addBtn.textContent = '➕ Add Consignee';
+        }
+    };
+
+    await refreshList();
+}
+document.getElementById('manageConsigneesBtn').addEventListener('click', showManageConsigneesModal);
+
 let currentSessionId = null;
 let currentWtboxData = null;
 let currentSelectedBag = null;
@@ -851,6 +987,16 @@ processUploadBtn.addEventListener('click', async () => {
 });
 generateManifestBtn.addEventListener('click', async () => {
     if (!currentSessionId || !currentWtboxData) { showError('No WT‑Box data.'); return; }
+
+    // Safety check: Separate Clearance is easy to forget to set, and once a
+    // manifest is generated the customs docs are locked in for that HAWB
+    // set. Confirm with the user rather than silently assuming "none today".
+    const anySeparateClearance = currentWtboxData.some(row => !!row.SeparateClearance);
+    if (!anySeparateClearance) {
+        const proceed = confirm("No HAWBs are marked as Separate Clearance. Are you sure there aren't any separate clearance shipments today?");
+        if (!proceed) return;
+    }
+
     const isBagBased = document.getElementById('bagBasedToggle').checked;
     const selectedConsignee = getSelectedConsignee();
     if (!selectedConsignee) { showError('Please add and select a consignee first.'); return; }
