@@ -202,7 +202,36 @@
             margin-left: auto;
         }
         .bag-toggle input { width: 18px; height: 18px; cursor: pointer; }
+        .consignee-field {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.85rem;
+            color: #65676b;
+        }
+        .consignee-field select {
+            min-width: 200px;
+            max-width: 280px;
+            padding: 0.4rem;
+            border: 1px solid #ccd0d5;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            color: #1c1e21;
+        }
+        #addConsigneeBtn { padding: 0.4rem 0.7rem; font-size: 0.85rem; }
+        #consigneeModal .modal-hint { font-size: 0.8rem; color: #65676b; margin-bottom: 0.75rem; }
+        #consigneeModal label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.3rem; }
+        #consigneeModal input, #consigneeModal textarea {
+            width: 100%; padding: 0.6rem; margin-bottom: 1rem; border: 1px solid #ccd0d5;
+            border-radius: 8px; font-family: inherit; font-size: 0.95rem;
+        }
         .bag-marking-cell.empty { color: #adb5bd; }
+        .separate-clearance-row td { background: #fff4e5 !important; }
+        .separate-clearance-row td:first-child { box-shadow: inset 3px 0 0 #e8890c; }
+        .separate-clearance-badge {
+            display: inline-block; font-size: 0.7rem; font-weight: 700; color: #b3690a;
+            background: #ffe8c2; border-radius: 8px; padding: 1px 6px; margin-left: 0.4rem;
+        }
         #invoiceModal .modal-hint {
             font-size: 0.8rem;
             color: #65676b;
@@ -280,6 +309,19 @@
                         <input type="number" id="maxBoxPerPartInput" value="10" min="1" step="1">
                         boxes / manifest part
                     </label>
+                    <label class="max-weight-label">max
+                        <input type="number" id="maxUsdPerPartInput" value="950" min="1" step="0.01">
+                        USD / manifest part
+                    </label>
+                    <label class="max-weight-label">max
+                        <input type="number" id="maxWeightPerPartInput" value="1500" min="1" step="0.01">
+                        kg / manifest part
+                    </label>
+                    <label class="consignee-field">
+                        Consignee
+                        <select id="consigneeSelect"><option value="">Loading…</option></select>
+                    </label>
+                    <button class="btn-secondary" id="addConsigneeBtn" type="button">➕ Add Consignee</button>
                     <label class="bag-toggle">
                         <input type="checkbox" id="bagBasedToggle">
                         Generate as bag-based invoice
@@ -419,9 +461,11 @@ const fileListSection = document.getElementById('fileListSection');
 const fileGrid = document.getElementById('fileGrid');
 const downloadAllZipBtn = document.getElementById('downloadAllZipBtn');
 const maxBoxPerPartInput = document.getElementById('maxBoxPerPartInput');
+const maxUsdPerPartInput = document.getElementById('maxUsdPerPartInput');
+const maxWeightPerPartInput = document.getElementById('maxWeightPerPartInput');
 
-// Pre-fill the box-per-part limit with whatever was last used, so nobody
-// has to remember this month's customs limit from scratch.
+// Pre-fill the box/USD/weight-per-part limits with whatever was last used,
+// so nobody has to remember this month's customs limits from scratch.
 (async () => {
     try {
         const res = await fetch('/last_box_limit');
@@ -429,11 +473,138 @@ const maxBoxPerPartInput = document.getElementById('maxBoxPerPartInput');
         if (data.max_box_per_part) maxBoxPerPartInput.value = data.max_box_per_part;
     } catch (err) { /* non-fatal - keep the default shown in the HTML */ }
 })();
+(async () => {
+    try {
+        const res = await fetch('/last_usd_limit');
+        const data = await res.json();
+        if (data.max_usd_per_part) maxUsdPerPartInput.value = data.max_usd_per_part;
+    } catch (err) { /* non-fatal - keep the default shown in the HTML */ }
+})();
+(async () => {
+    try {
+        const res = await fetch('/last_weight_limit');
+        const data = await res.json();
+        if (data.max_weight_per_part) maxWeightPerPartInput.value = data.max_weight_per_part;
+    } catch (err) { /* non-fatal - keep the default shown in the HTML */ }
+})();
 
 function getMaxBoxPerPart() {
     const val = parseInt(maxBoxPerPartInput.value, 10);
     return (!isNaN(val) && val > 0) ? val : 10;
 }
+function getMaxUsdPerPart() {
+    const val = parseFloat(maxUsdPerPartInput.value);
+    return (!isNaN(val) && val > 0) ? val : 950;
+}
+function getMaxWeightPerPart() {
+    const val = parseFloat(maxWeightPerPartInput.value);
+    return (!isNaN(val) && val > 0) ? val : 1500;
+}
+
+// ---------- Consignee dropdown (name/address/country, used on chamber cert) ----------
+const consigneeSelect = document.getElementById('consigneeSelect');
+const addConsigneeBtn = document.getElementById('addConsigneeBtn');
+let allConsignees = [];
+
+async function loadConsignees(selectId) {
+    try {
+        const res = await fetch('/consignees');
+        const data = await res.json();
+        allConsignees = data.consignees || [];
+        const previousValue = selectId || consigneeSelect.value;
+        consigneeSelect.innerHTML = '';
+        if (allConsignees.length === 0) {
+            consigneeSelect.innerHTML = '<option value="">No consignees yet — click Add</option>';
+            return;
+        }
+        allConsignees.forEach(c => {
+            const opt = document.createElement('option');
+            opt.value = c.id;
+            opt.textContent = c.country ? `${c.name} — ${c.country}` : c.name;
+            consigneeSelect.appendChild(opt);
+        });
+        // Keep whatever was selected before if it still exists, otherwise
+        // fall back to the newest entry so a just-added consignee is picked
+        // up automatically.
+        if (previousValue && allConsignees.some(c => c.id === previousValue)) {
+            consigneeSelect.value = previousValue;
+        } else {
+            consigneeSelect.value = allConsignees[allConsignees.length - 1].id;
+        }
+    } catch (err) {
+        consigneeSelect.innerHTML = '<option value="">Could not load consignees</option>';
+    }
+}
+loadConsignees();
+
+function getSelectedConsignee() {
+    const c = allConsignees.find(c => c.id === consigneeSelect.value);
+    if (!c) return null;
+    return { id: c.id, name: c.name, address: c.address || '', country: c.country || '' };
+}
+
+function showAddConsigneeModal() {
+    const modal = document.createElement('div');
+    modal.id = 'consigneeModal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:1000;';
+    const modalContent = document.createElement('div');
+    modalContent.style.cssText = 'background:white; border-radius:20px; padding:2rem; width:400px; max-width:90%; max-height:85vh; overflow-y:auto;';
+    modalContent.innerHTML = `
+        <h3>Add Consignee</h3>
+        <p class="modal-hint">Saved consignees appear in the dropdown for every future manifest, and the selected one is printed on the chamber certificate.</p>
+        <label>Name</label>
+        <input type="text" id="newConsigneeName" placeholder="e.g. ESHIPPER EXPRESS COURIER">
+        <label>Address</label>
+        <input type="text" id="newConsigneeAddress" placeholder="Street, city (optional)">
+        <label>Country</label>
+        <input type="text" id="newConsigneeCountry" placeholder="e.g. UK">
+        <div id="consigneeModalError" class="message error" style="display:none; margin-bottom:1rem;"></div>
+        <div style="display:flex; gap:1rem;">
+            <button id="saveConsigneeBtn" class="btn-primary">Save</button>
+            <button id="cancelConsigneeBtn" class="btn-primary" style="background:#ccc;">Cancel</button>
+        </div>
+    `;
+    modal.appendChild(modalContent);
+    document.body.appendChild(modal);
+    document.getElementById('newConsigneeName').focus();
+
+    const close = () => document.body.removeChild(modal);
+    document.getElementById('cancelConsigneeBtn').onclick = close;
+    document.getElementById('saveConsigneeBtn').onclick = async () => {
+        const name = document.getElementById('newConsigneeName').value.trim();
+        const address = document.getElementById('newConsigneeAddress').value.trim();
+        const country = document.getElementById('newConsigneeCountry').value.trim();
+        const errorDiv = document.getElementById('consigneeModalError');
+        if (!name || !country) {
+            errorDiv.textContent = 'Name and Country are required.';
+            errorDiv.style.display = 'block';
+            return;
+        }
+        const saveBtn = document.getElementById('saveConsigneeBtn');
+        saveBtn.disabled = true; saveBtn.textContent = 'Saving...';
+        try {
+            const res = await fetch('/consignees', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, address, country })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                close();
+                await loadConsignees(data.consignee.id);
+            } else {
+                errorDiv.textContent = data.error || 'Could not save consignee.';
+                errorDiv.style.display = 'block';
+                saveBtn.disabled = false; saveBtn.textContent = 'Save';
+            }
+        } catch (err) {
+            errorDiv.textContent = 'Network error.';
+            errorDiv.style.display = 'block';
+            saveBtn.disabled = false; saveBtn.textContent = 'Save';
+        }
+    };
+}
+addConsigneeBtn.addEventListener('click', showAddConsigneeModal);
 
 let currentSessionId = null;
 let currentWtboxData = null;
@@ -446,14 +617,21 @@ setupDrop(document.getElementById('secondaryBox'), secondaryInput, secondaryName
 
 function updateWtTotals() {
     if (!currentWtboxData) return;
-    let totalBoxes = 0, totalWeight = 0;
+    let totalBoxes = 0, totalWeight = 0, separateCount = 0;
     for (const row of currentWtboxData) {
         let boxVal = row.Box;
         if (boxVal && typeof boxVal === 'string') { let num = parseFloat(boxVal); if (!isNaN(num)) totalBoxes += num; }
         else if (typeof boxVal === 'number') totalBoxes += boxVal;
         let wt = parseFloat(row.Weight); if (!isNaN(wt)) totalWeight += wt;
+        if (row.SeparateClearance) separateCount++;
     }
-    wtTotalsDiv.innerHTML = `<strong>Total Boxes (PCS):</strong> ${totalBoxes} &nbsp; | &nbsp; <strong>Total Weight:</strong> ${totalWeight.toFixed(2)} kg`;
+    // Totals here always cover the WHOLE shipment (what the airline sees),
+    // including any Separate Clearance HAWBs - those are only excluded
+    // later, from the customs manifest/packing list/chamber cert.
+    const separateNote = separateCount > 0
+        ? ` &nbsp; | &nbsp; <span class="separate-clearance-badge">${separateCount} on separate clearance</span>`
+        : '';
+    wtTotalsDiv.innerHTML = `<strong>Total Boxes (PCS):</strong> ${totalBoxes} &nbsp; | &nbsp; <strong>Total Weight:</strong> ${totalWeight.toFixed(2)} kg${separateNote}`;
 }
 function updateBagPanel(bagLabel) {
     if (!currentWtboxData) return;
@@ -491,24 +669,40 @@ function renderWtboxTable(data) {
     const table = document.createElement('table');
     const thead = document.createElement('thead');
     const headerRow = document.createElement('tr');
-    ['HAWB', 'Details', 'Box', 'Bag Marking', 'Weight', 'Country'].forEach(col => { const th = document.createElement('th'); th.textContent = col; headerRow.appendChild(th); });
+    ['HAWB', 'Details', 'Box', 'Bag Marking', 'Weight', 'Country', 'Separate Clearance'].forEach(col => { const th = document.createElement('th'); th.textContent = col; headerRow.appendChild(th); });
     thead.appendChild(headerRow); table.appendChild(thead);
     const tbody = document.createElement('tbody');
     data.forEach(row => {
         if (row.BagMarking === undefined || row.BagMarking === null) row.BagMarking = '';
+        if (row.SeparateClearance === undefined || row.SeparateClearance === null) row.SeparateClearance = false;
         const tr = document.createElement('tr');
+        tr.classList.toggle('separate-clearance-row', !!row.SeparateClearance);
         const tdHawb = document.createElement('td'); tdHawb.textContent = row.HAWB; tr.appendChild(tdHawb);
         const tdDetails = document.createElement('td'); tdDetails.textContent = row.Details; tr.appendChild(tdDetails);
 
         // Box = pcs count only. Never editable, never repurposed for bag markings.
         const tdBox = document.createElement('td'); tdBox.textContent = row.Box; tr.appendChild(tdBox);
 
-        // Bag Marking = its own dedicated, editable field.
+        // Bag Marking = its own dedicated, editable field. It's the only
+        // editable cell left in this table, so it's the only one in the
+        // tab order (tabIndex=0) - Tab now goes straight from one row's
+        // marking to the next, never landing on Weight/Box/etc.
         const tdBag = document.createElement('td');
         tdBag.contentEditable = 'true';
+        tdBag.tabIndex = 0;
         tdBag.classList.add('editable', 'bag-marking-cell');
         tdBag.textContent = row.BagMarking;
         if (!row.BagMarking) tdBag.classList.add('empty');
+        // Select all existing text on focus (including via Tab), so typing
+        // immediately overwrites the old marking - no need to click in and
+        // manually select/clear it first.
+        tdBag.addEventListener('focus', () => {
+            const range = document.createRange();
+            range.selectNodeContents(tdBag);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+        });
         tdBag.addEventListener('blur', (e) => {
             const newValue = e.target.textContent.trim();
             row.BagMarking = newValue;
@@ -520,10 +714,29 @@ function renderWtboxTable(data) {
         makeBagClickable(tdBag, row.BagMarking);
         tr.appendChild(tdBag);
 
-        const tdWeight = document.createElement('td'); tdWeight.contentEditable = 'true'; tdWeight.classList.add('editable'); tdWeight.textContent = row.Weight;
-        tdWeight.addEventListener('blur', (e) => { row.Weight = e.target.textContent.trim(); updateWtTotals(); });
+        // Weight is read-only in this dashboard - it comes from the source
+        // data and isn't meant to be hand-edited here.
+        const tdWeight = document.createElement('td'); tdWeight.textContent = row.Weight;
         tr.appendChild(tdWeight);
         const tdCountry = document.createElement('td'); tdCountry.textContent = row.Country; tr.appendChild(tdCountry);
+
+        // Separate Clearance: consignee has their own customs documents for
+        // this parcel, so it must be excluded from the customs
+        // manifest/packing list/chamber cert - but it stays in this WT-Box
+        // report and its totals below, since that's the whole physical
+        // shipment handed to the airline.
+        const tdSeparate = document.createElement('td'); tdSeparate.classList.add('checkbox-col');
+        const cbSeparate = document.createElement('input');
+        cbSeparate.type = 'checkbox';
+        cbSeparate.checked = !!row.SeparateClearance;
+        cbSeparate.title = 'Separate clearance \u2013 excluded from customs manifest/packing list/chamber cert';
+        cbSeparate.addEventListener('change', () => {
+            row.SeparateClearance = cbSeparate.checked;
+            tr.classList.toggle('separate-clearance-row', cbSeparate.checked);
+        });
+        tdSeparate.appendChild(cbSeparate);
+        tr.appendChild(tdSeparate);
+
         tbody.appendChild(tr);
     });
     table.appendChild(tbody);
@@ -639,9 +852,11 @@ processUploadBtn.addEventListener('click', async () => {
 generateManifestBtn.addEventListener('click', async () => {
     if (!currentSessionId || !currentWtboxData) { showError('No WT‑Box data.'); return; }
     const isBagBased = document.getElementById('bagBasedToggle').checked;
+    const selectedConsignee = getSelectedConsignee();
+    if (!selectedConsignee) { showError('Please add and select a consignee first.'); return; }
     generateManifestBtn.disabled = true; generateManifestBtn.textContent = 'Preparing...';
     try {
-        const previewRes = await fetch('/preview_bag_parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: currentSessionId, data: currentWtboxData, is_bag_based: isBagBased, max_box_per_part: getMaxBoxPerPart() }) });
+        const previewRes = await fetch('/preview_bag_parts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: currentSessionId, data: currentWtboxData, is_bag_based: isBagBased, max_box_per_part: getMaxBoxPerPart(), max_usd_per_part: getMaxUsdPerPart(), max_weight_per_part: getMaxWeightPerPart() }) });
         const previewData = await previewRes.json();
         if (!previewRes.ok) throw new Error(previewData.error || 'Could not preview the split.');
         const partCount = previewData.part_count;
@@ -650,9 +865,13 @@ generateManifestBtn.addEventListener('click', async () => {
         await showInvoiceModal(partCount, isBagBased, async (invoices) => {
             generateManifestBtn.disabled = true; generateManifestBtn.textContent = 'Generating...';
             try {
-                const response = await fetch('/generate_manifest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: currentSessionId, data: currentWtboxData, is_bag_based: isBagBased, invoice_numbers: invoices, max_box_per_part: getMaxBoxPerPart() }) });
+                const response = await fetch('/generate_manifest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: currentSessionId, data: currentWtboxData, is_bag_based: isBagBased, invoice_numbers: invoices, consignee: selectedConsignee, max_box_per_part: getMaxBoxPerPart(), max_usd_per_part: getMaxUsdPerPart(), max_weight_per_part: getMaxWeightPerPart() }) });
                 const data = await response.json();
-                if (response.ok && data.files) { displayFiles(data.files, data.session_id); showSuccess(`Generated ${data.files.length} manifests.`); }
+                if (response.ok && data.files) {
+                    displayFiles(data.files, data.session_id);
+                    showSuccess(`Generated ${data.files.length} manifests.`);
+                    showDocumentPreviewModal(data.files, data.session_id);
+                }
                 else { showError(data.error || 'Generation failed.'); }
             } catch (err) { showError('Error generating manifests.'); }
             finally { generateManifestBtn.disabled = false; generateManifestBtn.textContent = '🚀 Generate Custom Manifest'; }
@@ -662,19 +881,157 @@ generateManifestBtn.addEventListener('click', async () => {
         generateManifestBtn.disabled = false; generateManifestBtn.textContent = '🚀 Generate Custom Manifest';
     }
 });
+function chamberFileIdFor(file, sessionId) {
+    return file.type === 'bag' ? `${sessionId}_bag_chamber_${file.part_number}` : `${sessionId}_orig_chamber_${file.part_number}`;
+}
 function displayFiles(files, sessionId) {
     fileGrid.innerHTML = '';
-    files.forEach(file => {
+    files.forEach((file, idx) => {
         const card = document.createElement('div'); card.style.padding = '0.5rem'; card.style.border = '1px solid #e4e6eb'; card.style.borderRadius = '8px';
-        const chamberFileId = file.type === 'bag' ? `${sessionId}_bag_chamber_${file.part_number}` : `${sessionId}_orig_chamber_${file.part_number}`;
-        card.innerHTML = `<div><span>📎</span> ${escapeHtml(file.name)}</div><div><a href="/download/${file.id}" style="margin-right:1rem;">⬇ Download</a><button class="chamber-btn" data-chamber-id="${chamberFileId}">📜 Chamber</button></div>`;
+        const chamberFileId = chamberFileIdFor(file, sessionId);
+        card.innerHTML = `<div><span>📎</span> ${escapeHtml(file.name)}</div><div><button class="preview-btn" data-idx="${idx}" style="margin-right:1rem; background:none; border:1px solid #1877f2; color:#1877f2; border-radius:8px; padding:0.3rem 0.6rem; cursor:pointer; font-weight:600;">👁 Preview</button><a href="/download/${file.id}" style="margin-right:1rem;">⬇ Download</a><button class="chamber-btn" data-chamber-id="${chamberFileId}">📜 Chamber</button></div>`;
         fileGrid.appendChild(card);
+    });
+    document.querySelectorAll('.preview-btn').forEach(btn => {
+        btn.addEventListener('click', () => showDocumentPreviewModal(files, sessionId, parseInt(btn.getAttribute('data-idx'), 10)));
     });
     document.querySelectorAll('.chamber-btn').forEach(btn => {
         btn.addEventListener('click', () => window.location.href = `/chamber_certificate/${btn.getAttribute('data-chamber-id')}`);
     });
     downloadAllZipBtn.onclick = () => window.location.href = `/download_all/${sessionId}`;
     fileListSection.style.display = 'block';
+}
+
+function renderPreviewTable(rows) {
+    if (!rows || rows.length === 0) return '<p style="color:#65676b;">No data.</p>';
+    let html = '<div style="overflow-x:auto;"><table class="tracking-table"><thead><tr>';
+    rows[0].forEach(cell => { html += `<th>${escapeHtml(String(cell))}</th>`; });
+    html += '</tr></thead><tbody>';
+    for (let i = 1; i < rows.length; i++) {
+        html += '<tr>';
+        rows[i].forEach(cell => { html += `<td>${escapeHtml(String(cell))}</td>`; });
+        html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+    return html;
+}
+
+function renderChamberPreview(chamberData) {
+    if (!chamberData) return '<p style="color:#65676b;">No chamber certificate for this part.</p>';
+    let html = '<div style="background:#f7f8fa; border-radius:12px; padding:1rem; font-size:0.9rem; line-height:1.7;">';
+    (chamberData.paragraphs || []).forEach(p => { html += `<p style="margin-bottom:0.5rem;">${escapeHtml(p)}</p>`; });
+    (chamberData.tables || []).forEach(table => {
+        html += '<table class="tracking-table" style="margin-top:0.75rem;"><tbody>';
+        table.forEach(row => {
+            html += '<tr>'; row.forEach(cell => { html += `<td>${escapeHtml(cell)}</td>`; }); html += '</tr>';
+        });
+        html += '</tbody></table>';
+    });
+    html += '</div>';
+    return html;
+}
+
+async function showDocumentPreviewModal(files, sessionId, startIdx) {
+    if (!files || files.length === 0) return;
+    const modal = document.createElement('div');
+    modal.id = 'previewModal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:1000; padding:1rem;';
+    const modalContent = document.createElement('div');
+    modalContent.style.cssText = 'background:white; border-radius:20px; padding:1.5rem; width:900px; max-width:100%; max-height:90vh; overflow-y:auto;';
+    modalContent.innerHTML = `
+        <h3 style="margin-bottom:0.5rem;">📑 Preview before download</h3>
+        <p class="modal-hint" style="font-size:0.8rem; color:#65676b; margin-bottom:1rem;">Review each part's Custom Manifest, Packing List and Chamber Certificate exactly as generated. Nothing downloads until you click a button below.</p>
+        <div id="previewPartTabs" class="tabs" style="margin-bottom:0.75rem; flex-wrap:wrap;"></div>
+        <div id="previewDocTabs" style="display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap:wrap;"></div>
+        <div id="previewContent" style="min-height:200px;"><p>Loading preview…</p></div>
+        <div style="display:flex; gap:1rem; margin-top:1.5rem; flex-wrap:wrap;">
+            <a id="previewDownloadBtn" class="btn-primary" style="text-decoration:none; text-align:center; flex:1; min-width:160px;" href="#">⬇ Download this Excel</a>
+            <a id="previewChamberBtn" class="btn-primary" style="text-decoration:none; text-align:center; background:#8e44ad; flex:1; min-width:160px;" href="#">📜 Download Chamber</a>
+            <button id="previewDownloadAllBtn" class="btn-primary btn-purple" style="flex:1; min-width:160px;">📦 Download All as ZIP</button>
+            <button id="previewCloseBtn" class="btn-primary" style="background:#ccc; flex:0 0 auto; width:auto; padding:0.75rem 1.5rem;">Close</button>
+        </div>
+    `;
+    modal.appendChild(modalContent);
+    document.body.appendChild(modal);
+
+    const partTabsEl = document.getElementById('previewPartTabs');
+    const docTabsEl = document.getElementById('previewDocTabs');
+    const contentEl = document.getElementById('previewContent');
+    const downloadBtn = document.getElementById('previewDownloadBtn');
+    const chamberBtn = document.getElementById('previewChamberBtn');
+
+    const cache = {}; // file.id -> { manifest, packing_list, chamber }
+    let activePartIdx = (typeof startIdx === 'number' && startIdx >= 0 && startIdx < files.length) ? startIdx : 0;
+    let activeDoc = 'manifest';
+
+    async function loadPartData(idx) {
+        const file = files[idx];
+        if (cache[file.id]) return cache[file.id];
+        const entry = { manifest: null, packing_list: null, chamber: null };
+        try {
+            const res = await fetch(`/preview_manifest/${file.id}`);
+            if (res.ok) {
+                const d = await res.json();
+                entry.manifest = d.manifest || null;
+                entry.packing_list = d.packing_list || null;
+            }
+        } catch (e) {}
+        try {
+            const cRes = await fetch(`/preview_chamber/${chamberFileIdFor(file, sessionId)}`);
+            if (cRes.ok) entry.chamber = await cRes.json();
+        } catch (e) {}
+        cache[file.id] = entry;
+        return entry;
+    }
+
+    function renderDocTabs() {
+        docTabsEl.innerHTML = '';
+        const docs = [
+            { key: 'manifest', label: '📄 Manifest' },
+            { key: 'packing_list', label: '📦 Packing List' },
+            { key: 'chamber', label: '📜 Chamber Certificate' }
+        ];
+        docs.forEach(d => {
+            const btn = document.createElement('button');
+            btn.className = 'btn-secondary';
+            if (activeDoc === d.key) { btn.style.background = '#1877f2'; btn.style.color = 'white'; }
+            btn.textContent = d.label;
+            btn.style.padding = '0.5rem 0.9rem';
+            btn.style.fontSize = '0.85rem';
+            btn.addEventListener('click', () => { activeDoc = d.key; renderContent(); });
+            docTabsEl.appendChild(btn);
+        });
+    }
+
+    async function renderContent() {
+        renderDocTabs();
+        const file = files[activePartIdx];
+        downloadBtn.href = `/download/${file.id}`;
+        chamberBtn.href = `/chamber_certificate/${chamberFileIdFor(file, sessionId)}`;
+        contentEl.innerHTML = '<p>Loading preview…</p>';
+        const entry = await loadPartData(activePartIdx);
+        if (activeDoc === 'manifest') contentEl.innerHTML = renderPreviewTable(entry.manifest);
+        else if (activeDoc === 'packing_list') contentEl.innerHTML = renderPreviewTable(entry.packing_list);
+        else contentEl.innerHTML = renderChamberPreview(entry.chamber);
+    }
+
+    function renderPartTabs() {
+        partTabsEl.innerHTML = '';
+        if (files.length <= 1) return;
+        files.forEach((file, idx) => {
+            const btn = document.createElement('button');
+            btn.className = 'tab-btn' + (idx === activePartIdx ? ' active' : '');
+            btn.textContent = `Part ${file.part_number}`;
+            btn.addEventListener('click', () => { activePartIdx = idx; activeDoc = 'manifest'; renderPartTabs(); renderContent(); });
+            partTabsEl.appendChild(btn);
+        });
+    }
+
+    renderPartTabs();
+    await renderContent();
+
+    document.getElementById('previewDownloadAllBtn').onclick = () => window.location.href = `/download_all/${sessionId}`;
+    document.getElementById('previewCloseBtn').onclick = () => document.body.removeChild(modal);
 }
 saveWtboxBtn.addEventListener('click', async () => {
     if (!currentSessionId || !currentWtboxData) { showError('No WT‑Box data.'); return; }

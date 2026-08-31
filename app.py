@@ -115,6 +115,49 @@ def save_last_manifest_number(value):
     except OSError:
         app.logger.exception("Failed to save last manifest number")
 
+def _get_last_numeric_setting(redis_key, file_path, file_field, default, cast=int):
+    """Shared read path for small persisted numeric settings (box/usd/weight
+    limits): Upstash Redis first, then the local JSON file (used when Redis
+    isn't configured, e.g. running locally), then the built-in default if
+    nothing has ever been saved."""
+    redis_value = _redis_get(redis_key)
+    if redis_value is not None:
+        try:
+            return cast(redis_value)
+        except (TypeError, ValueError):
+            pass
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r') as f:
+                return cast(json.load(f).get(file_field, default))
+        except (json.JSONDecodeError, OSError, ValueError, TypeError):
+            return default
+    return default
+
+def _save_last_numeric_setting(redis_key, file_path, file_field, value, cast=int):
+    if _redis_set(redis_key, value):
+        return
+    try:
+        with open(file_path, 'w') as f:
+            json.dump({file_field: cast(value), 'updated_at': datetime.now().isoformat()}, f)
+    except (OSError, ValueError, TypeError):
+        app.logger.exception(f"Failed to save {file_field}")
+
+def _parse_part_limit(data, key, fallback_value, cast=int):
+    """Parse a per-part split limit (box/usd/weight) from request JSON,
+    falling back to the last-saved value when the field is omitted or
+    blank. Raises ValueError (caller turns this into a 400) on bad input."""
+    raw = data.get(key)
+    if raw in (None, ''):
+        return fallback_value
+    try:
+        value = cast(raw)
+        if value <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ValueError(f'{key} must be a positive number')
+    return value
+
 LAST_BOX_LIMIT_FILE = os.path.join(PERSISTENT_DATA_FOLDER, 'last_box_limit.json')
 DEFAULT_MAX_BOX_PER_PART = 10  # used only if nothing has ever been saved
 
@@ -122,29 +165,83 @@ def get_last_box_limit():
     """Return the last-used 'boxes per custom manifest part' limit, or the
     default if it's never been set. Lets customs limits be changed from the
     UI each month instead of editing code."""
-    redis_value = _redis_get('max_box_per_part')
-    if redis_value is not None:
-        try:
-            return int(redis_value)
-        except (TypeError, ValueError):
-            pass
-    if os.path.exists(LAST_BOX_LIMIT_FILE):
-        try:
-            with open(LAST_BOX_LIMIT_FILE, 'r') as f:
-                return int(json.load(f).get('max_box_per_part', DEFAULT_MAX_BOX_PER_PART))
-        except (json.JSONDecodeError, OSError, ValueError, TypeError):
-            return DEFAULT_MAX_BOX_PER_PART
-    return DEFAULT_MAX_BOX_PER_PART
+    return _get_last_numeric_setting('max_box_per_part', LAST_BOX_LIMIT_FILE, 'max_box_per_part', DEFAULT_MAX_BOX_PER_PART, int)
 
 def save_last_box_limit(value):
     """Persist the box-per-part limit so it's remembered next time."""
-    if _redis_set('max_box_per_part', value):
+    _save_last_numeric_setting('max_box_per_part', LAST_BOX_LIMIT_FILE, 'max_box_per_part', value, int)
+
+LAST_USD_LIMIT_FILE = os.path.join(PERSISTENT_DATA_FOLDER, 'last_usd_limit.json')
+DEFAULT_MAX_USD_PER_PART = 950  # used only if nothing has ever been saved
+
+def get_last_usd_limit():
+    """Return the last-used 'USD value per custom manifest part' limit, or
+    the default if it's never been set."""
+    return _get_last_numeric_setting('max_usd_per_part', LAST_USD_LIMIT_FILE, 'max_usd_per_part', DEFAULT_MAX_USD_PER_PART, float)
+
+def save_last_usd_limit(value):
+    """Persist the USD-per-part limit so it's remembered next time."""
+    _save_last_numeric_setting('max_usd_per_part', LAST_USD_LIMIT_FILE, 'max_usd_per_part', value, float)
+
+LAST_WEIGHT_LIMIT_FILE = os.path.join(PERSISTENT_DATA_FOLDER, 'last_weight_limit.json')
+DEFAULT_MAX_WEIGHT_PER_PART = 1500  # used only if nothing has ever been saved
+
+def get_last_weight_limit():
+    """Return the last-used 'weight (kg) per custom manifest part' limit,
+    or the default if it's never been set."""
+    return _get_last_numeric_setting('max_weight_per_part', LAST_WEIGHT_LIMIT_FILE, 'max_weight_per_part', DEFAULT_MAX_WEIGHT_PER_PART, float)
+
+def save_last_weight_limit(value):
+    """Persist the weight-per-part limit so it's remembered next time."""
+    _save_last_numeric_setting('max_weight_per_part', LAST_WEIGHT_LIMIT_FILE, 'max_weight_per_part', value, float)
+
+LAST_CONSIGNEES_FILE = os.path.join(PERSISTENT_DATA_FOLDER, 'consignees.json')
+# Seeds the saved list with the value that used to be hardcoded, so existing
+# behavior/output is unchanged until the user adds their own consignees.
+DEFAULT_CONSIGNEES = [
+    {'id': 'default', 'name': 'ESHIPPER EXPRESS COURIER', 'address': '', 'country': 'UK'}
+]
+
+def get_consignees():
+    """Return the saved list of consignees ({id, name, address, country}).
+    Upstash first, then the local JSON file, then the built-in default."""
+    redis_value = _redis_get('consignees')
+    if redis_value is not None:
+        try:
+            return json.loads(redis_value)
+        except (TypeError, ValueError):
+            pass
+    if os.path.exists(LAST_CONSIGNEES_FILE):
+        try:
+            with open(LAST_CONSIGNEES_FILE, 'r') as f:
+                return json.load(f).get('consignees', DEFAULT_CONSIGNEES)
+        except (json.JSONDecodeError, OSError):
+            return DEFAULT_CONSIGNEES
+    return DEFAULT_CONSIGNEES
+
+def save_consignees(consignees):
+    """Persist the full consignee list (Upstash first, then local file)."""
+    if _redis_set('consignees', json.dumps(consignees)):
         return
     try:
-        with open(LAST_BOX_LIMIT_FILE, 'w') as f:
-            json.dump({'max_box_per_part': int(value), 'updated_at': datetime.now().isoformat()}, f)
-    except (OSError, ValueError, TypeError):
-        app.logger.exception("Failed to save last box limit")
+        with open(LAST_CONSIGNEES_FILE, 'w') as f:
+            json.dump({'consignees': consignees, 'updated_at': datetime.now().isoformat()}, f)
+    except OSError:
+        app.logger.exception("Failed to save consignees")
+
+def add_consignee(name, address, country):
+    """Append a new consignee to the saved list and persist it. Returns
+    (new_entry, full_list)."""
+    consignees = get_consignees()
+    new_entry = {
+        'id': uuid.uuid4().hex,
+        'name': name.strip(),
+        'address': address.strip(),
+        'country': country.strip()
+    }
+    consignees.append(new_entry)
+    save_consignees(consignees)
+    return new_entry, consignees
 
 def get_session_bag_markings(session_dir):
     """Read the persisted {HAWB: marking} map for a session, if any."""
@@ -167,6 +264,34 @@ def save_session_bag_markings(session_dir, mapping):
             json.dump(clean, f)
     except OSError:
         app.logger.exception("Failed to save session bag markings")
+
+def get_session_separate_clearance(session_dir):
+    """Read the persisted {HAWB: True} map of 'Separate Clearance' flags for
+    a session, if any. A flagged HAWB means the consignee clears customs on
+    their own documents for that parcel, so it must be excluded from the
+    customs manifest / packing list / chamber certificate - but it still
+    belongs in the WT-Box report, which reflects the whole physical
+    shipment handed to the airline."""
+    path = os.path.join(session_dir, 'separate_clearance.json')
+    if os.path.exists(path):
+        try:
+            with open(path, 'r') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+def save_session_separate_clearance(session_dir, mapping):
+    """Persist the {HAWB: True} map of Separate Clearance flags for a
+    session (only the flagged HAWBs are stored)."""
+    session_dir = ensure_dir(session_dir)
+    path = os.path.join(session_dir, 'separate_clearance.json')
+    clean = {h: True for h, flagged in mapping.items() if flagged}
+    try:
+        with open(path, 'w') as f:
+            json.dump(clean, f)
+    except OSError:
+        app.logger.exception("Failed to save session separate-clearance flags")
 
 download_files = {}
 chamber_download_files = {}
@@ -312,6 +437,25 @@ def extract_hawb_to_bag(edited_rows, session_dir=None):
         bag = str(bag).strip() if bag not in (None, '') else None
         hawb_to_bag[hawb] = bag
     return hawb_to_bag
+
+def extract_hawb_to_separate(edited_rows, session_dir=None):
+    """
+    Build {HAWB: True/False} from the WT-box report's dedicated
+    'SeparateClearance' field - True means the consignee is clearing that
+    parcel's customs on their own documents, so it must be excluded from
+    the customs manifest / packing list / chamber certificate. Falls back
+    to the persisted per-session flags for any row that doesn't include the
+    field, so older clients / partial payloads still work.
+    """
+    persisted = get_session_separate_clearance(session_dir) if session_dir else {}
+    hawb_to_separate = {}
+    for row in edited_rows:
+        hawb = row.get('HAWB')
+        flag = row.get('SeparateClearance')
+        if flag is None:
+            flag = persisted.get(hawb, False)
+        hawb_to_separate[hawb] = bool(flag)
+    return hawb_to_separate
 
 def is_valuable_item(description):
     valuable_keywords = [
@@ -461,20 +605,26 @@ def create_itemised_sheet(merged_df, use_bag_labels=False, bag_map=None, console
             rows.append({'HAWB': '', 'DESCRIPTION': '', 'PCS': '', 'UNIT VALUE': '', 'TOTAL': '', 'HSCODE': ''})
     return pd.DataFrame(rows)
 
+def is_console_bag_marking(marking):
+    """A marking is a CONSOLE bag only when it's explicitly written that
+    way: 'BAG-<something>' (case-insensitive, e.g. 'BAG-1', 'Bag-12').
+    Plain numbers or box-ranges like '2', '3', '4-5' are just bag/box
+    numbers, never a console - regardless of how many HAWBs happen to
+    carry the same marking. This is a format check, not a count check."""
+    if not marking:
+        return False
+    return bool(re.match(r'^\s*BAG\s*-\s*\S+', str(marking).strip(), re.IGNORECASE))
+
 def build_bag_note_map(hawb_to_bag):
     """Given {HAWB: marking}, return {HAWB: display_note} ready to hand to
-    create_itemised_sheet's console_bag_notes. A marking shared by 2+ HAWBs
-    is a true consolidation -> 'Console Bag: X'. A marking held by exactly
-    one HAWB (e.g. a standalone box-range like '3-12', or any single plain
-    number) is NOT a consolidation -> just 'Bag: X'."""
+    create_itemised_sheet's console_bag_notes. A marking written as
+    'BAG-<n>' is a true console bag -> 'Console Bag: X'. Any other marking
+    (a plain number or box-range like '3-12') is just a bag/box number ->
+    'Bag: X'."""
     if not hawb_to_bag:
         return {}
-    counts = {}
-    for marking in hawb_to_bag.values():
-        if marking:
-            counts[marking] = counts.get(marking, 0) + 1
     return {
-        hawb: (f'Console Bag: {marking}' if counts.get(marking, 0) > 1 else f'Bag: {marking}')
+        hawb: (f'Console Bag: {marking}' if is_console_bag_marking(marking) else f'Bag: {marking}')
         for hawb, marking in hawb_to_bag.items() if marking
     }
 
@@ -551,7 +701,12 @@ def prepare_wtbox_data(merged_df):
             'Box': original_pcs,
             'BagMarking': bag_suggestions.get(hawb, ''),
             'Weight': weight,
-            'Country': country
+            'Country': country,
+            # Consignee has separate clearance documents for this parcel -
+            # doesn't go through Doko's customs manifest/packing
+            # list/chamber cert, but still counts toward the WT-Box report
+            # since that's the whole physical shipment handed to the airline.
+            'SeparateClearance': False
         })
     df_wt = pd.DataFrame(wt_data)
     country_counts = df_wt['Country'].value_counts().to_dict()
@@ -559,10 +714,7 @@ def prepare_wtbox_data(merged_df):
     df_wt = df_wt.sort_values('_count', ascending=True).drop('_count', axis=1)
     return df_wt
 
-MAX_USD_PER_PART = 950
-MAX_WEIGHT_PER_PART = 1500
-
-def split_manifest(merged_df, bag_map=None, max_box_per_part=None):
+def split_manifest(merged_df, bag_map=None, max_box_per_part=None, max_usd_per_part=None, max_weight_per_part=None):
     """
     Build manifest parts with two priorities, in this order:
       1) TOP PRIORITY: each part should contain exactly max_box_per_part
@@ -570,27 +722,40 @@ def split_manifest(merged_df, bag_map=None, max_box_per_part=None):
          categories together.
       2) SECOND PRIORITY: prefer keeping the same content category together
          within a part, for easier customs inspection.
-    USD (950) and weight (1500 kg) remain hard caps per part.
+    USD and weight remain hard caps per part (see max_usd_per_part /
+    max_weight_per_part below).
 
     max_box_per_part: boxes-per-part limit for this run. Passed in by the
     caller (sourced from the request / last-saved setting) so this can be
     changed from the UI when customs limits change, instead of editing
     code. Falls back to DEFAULT_MAX_BOX_PER_PART if not given.
 
+    max_usd_per_part / max_weight_per_part: same idea as max_box_per_part,
+    for the USD-value and weight (kg) caps per part. Fall back to
+    DEFAULT_MAX_USD_PER_PART / DEFAULT_MAX_WEIGHT_PER_PART if not given.
+
     bag_map: optional {HAWB: bag_label} dict. When provided, the packing
     list for each part will show a "Console Bag: <label>" note directly
     under the relevant HAWB's line items.
     """
     max_box_per_part = int(max_box_per_part) if max_box_per_part else DEFAULT_MAX_BOX_PER_PART
+    max_usd_per_part = float(max_usd_per_part) if max_usd_per_part else DEFAULT_MAX_USD_PER_PART
+    max_weight_per_part = float(max_weight_per_part) if max_weight_per_part else DEFAULT_MAX_WEIGHT_PER_PART
     df = merged_df.reset_index(drop=True).copy()
     df['_category'] = df['Goods Description'].apply(categorize_description)
+
+    bag_note_map = build_bag_note_map(bag_map)
+    # Show the same 'Bag: X' / 'Console Bag: X' note on the Custom Manifest
+    # sheet (via REMARKS), not just in the packing list note built later by
+    # create_itemised_sheet. Plain bag numbers never got surfaced on the
+    # manifest before this - only console bags did, indirectly, since a
+    # console bag's HAWB# is replaced by its label in the bag-based flow.
+    df['REMARKS'] = df['HAWB#'].map(bag_note_map).fillna('')
 
     category_queues = {cat: list(df.index[df['_category'] == cat]) for cat in CATEGORY_ORDER}
 
     def any_left():
         return any(category_queues[c] for c in CATEGORY_ORDER)
-
-    bag_note_map = build_bag_note_map(bag_map)
 
     parts = []
     itemised_parts = []
@@ -607,7 +772,7 @@ def split_manifest(merged_df, bag_map=None, max_box_per_part=None):
             pcs = int(row['NO OF PCS'])
             usd = float(row['GBP'])
             weight = float(row['Actual WT'])
-            if bin_indices and (cum_pcs + pcs > max_box_per_part or cum_usd + usd > MAX_USD_PER_PART or cum_weight + weight > MAX_WEIGHT_PER_PART):
+            if bin_indices and (cum_pcs + pcs > max_box_per_part or cum_usd + usd > max_usd_per_part or cum_weight + weight > max_weight_per_part):
                 return False
             bin_indices.append(idx)
             cum_pcs += pcs
@@ -641,7 +806,8 @@ def split_manifest(merged_df, bag_map=None, max_box_per_part=None):
 
     return parts, itemised_parts
 
-def save_excel_for_part(part_df, itemised_df, part_number, invoice_date, temp_dir, invoice_number, narration_text=None):
+def save_excel_for_part(part_df, itemised_df, part_number, invoice_date, temp_dir, invoice_number, narration_text=None,
+                         consignee_name="ESHIPPER EXPRESS COURIER", consignee_address="", consignee_country="UK"):
     wb = openpyxl.Workbook()
     default_sheet = wb.active
     wb.remove(default_sheet)
@@ -664,7 +830,11 @@ def save_excel_for_part(part_df, itemised_df, part_number, invoice_date, temp_di
         'BOX_RANGE', 'HAWB#', 'NO OF PCS', 'Actual WT', 'GBP', 'CONSIGNER', 'Consignee Name', 'Goods Description', 'Destination'
     ]].copy()
     manifest_data.columns = ['BOX', 'HAWB', 'PCS', 'WEIGHT', 'USD', 'SENDER', 'RECEIVER', 'DESCRIPTION', 'DESTINATION']
-    manifest_data['REMARKS'] = ''
+    # Bag/console marking note, e.g. 'Bag: 2' or 'Console Bag: BAG-1' - if
+    # split_manifest/build_bag_rows already attached one per row, show it on
+    # the Custom Manifest sheet too (not just the packing list). Otherwise
+    # leave REMARKS blank for the user to fill in by hand.
+    manifest_data['REMARKS'] = part_df['REMARKS'] if 'REMARKS' in part_df.columns else ''
     manifest_data['PCS'] = pd.to_numeric(manifest_data['PCS'], errors='coerce').fillna(0).astype(int)
     manifest_data['WEIGHT'] = pd.to_numeric(manifest_data['WEIGHT'], errors='coerce').fillna(0.0)
     manifest_data['USD'] = pd.to_numeric(manifest_data['USD'], errors='coerce').fillna(0.0)
@@ -683,7 +853,8 @@ def save_excel_for_part(part_df, itemised_df, part_number, invoice_date, temp_di
     ws_manifest.page_setup.fitToHeight = 0
     
     max_col = len(manifest_with_total.columns)
-    start_row = add_title_block_sheet1(ws_manifest, total_boxes, total_weight, invoice_date, max_col, invoice_number)
+    start_row = add_title_block_sheet1(ws_manifest, total_boxes, total_weight, invoice_date, max_col, invoice_number,
+                                        consignee_name, consignee_address, consignee_country)
     last_row = write_data_to_sheet(ws_manifest, manifest_with_total, start_row)
     apply_borders(ws_manifest, last_row, max_col)
     auto_fit_columns(ws_manifest, start_row)
@@ -723,7 +894,8 @@ def save_excel_for_part(part_df, itemised_df, part_number, invoice_date, temp_di
     ws_packing.page_setup.fitToHeight = 0
     
     max_col_p = len(packing_with_total.columns)
-    start_row_p = add_title_block_sheet2(ws_packing, total_boxes, total_weight, invoice_date, max_col_p, invoice_number)
+    start_row_p = add_title_block_sheet2(ws_packing, total_boxes, total_weight, invoice_date, max_col_p, invoice_number,
+                                          consignee_name, consignee_address, consignee_country)
     last_row_p = write_data_to_sheet(ws_packing, packing_with_total, start_row_p)
     apply_borders(ws_packing, last_row_p, max_col_p)
     auto_fit_columns(ws_packing, start_row_p)
@@ -735,7 +907,8 @@ def save_excel_for_part(part_df, itemised_df, part_number, invoice_date, temp_di
     os.chmod(filepath, 0o644)
     return filepath, filename
 
-def add_title_block_sheet1(worksheet, total_boxes, total_weight, invoice_date, max_col, invoice_number):
+def add_title_block_sheet1(worksheet, total_boxes, total_weight, invoice_date, max_col, invoice_number,
+                            consignee_name="ESHIPPER EXPRESS COURIER", consignee_address="", consignee_country="UK"):
     worksheet.insert_rows(1, amount=13)
     worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
     worksheet['A1'] = 'DOKO EXPORTS PVT LTD'
@@ -757,17 +930,21 @@ def add_title_block_sheet1(worksheet, total_boxes, total_weight, invoice_date, m
     worksheet['G7'].font = Font(bold=True)
     worksheet['A8'] = 'To:'
     worksheet['A8'].font = Font(bold=True)
-    worksheet['B8'] = 'ESHIPPER EXPRESS COURIER'
+    # Row 8: consignee name. Row 9: address + country on one line (address
+    # omitted if the saved consignee doesn't have one) - keeps the same
+    # two-row layout the G-column fields (Box/Weight/Shipment) are aligned to.
+    worksheet['B8'] = consignee_name
     worksheet['G8'] = f'Box- {total_boxes} boxes'
     worksheet['G8'].font = Font(bold=True)
-    worksheet['B9'] = 'UK'
+    worksheet['B9'] = ', '.join(p for p in [consignee_address, consignee_country] if p)
     worksheet['G9'] = f'Weight: {total_weight:.2f} kgs'
     worksheet['G9'].font = Font(bold=True)
     worksheet['G10'] = 'Shipment by : Air Freight'
     worksheet['G10'].font = Font(bold=True)
     return 14
 
-def add_title_block_sheet2(worksheet, total_boxes, total_weight, invoice_date, max_col, invoice_number):
+def add_title_block_sheet2(worksheet, total_boxes, total_weight, invoice_date, max_col, invoice_number,
+                            consignee_name="ESHIPPER EXPRESS COURIER", consignee_address="", consignee_country="UK"):
     worksheet.insert_rows(1, amount=13)
     worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
     worksheet['A1'] = 'DOKO EXPORTS PVT LTD'
@@ -789,10 +966,10 @@ def add_title_block_sheet2(worksheet, total_boxes, total_weight, invoice_date, m
     worksheet['C7'].font = Font(bold=True)
     worksheet['A8'] = 'To:'
     worksheet['A8'].font = Font(bold=True)
-    worksheet['B8'] = 'ESHIPPER EXPRESS COURIER'
+    worksheet['B8'] = consignee_name
     worksheet['C8'] = f'Box- {total_boxes} boxes'
     worksheet['C8'].font = Font(bold=True)
-    worksheet['B9'] = 'UK'
+    worksheet['B9'] = ', '.join(p for p in [consignee_address, consignee_country] if p)
     worksheet['C9'] = f'Weight: {total_weight:.2f} kgs'
     worksheet['C9'].font = Font(bold=True)
     worksheet['C10'] = 'Shipment by : Air Freight'
@@ -841,7 +1018,10 @@ def generate_chamber_certificate(session_dir, meta, invoice_number, invoice_date
     if not os.path.exists(template_path):
         return None, None
     doc = Document(template_path)
-    consignee_details = f"{meta['consignee']}, {meta['destination']}"
+    # Address is optional (older callers / consignees saved without one)
+    # so it's only included when present, instead of leaving a blank spot.
+    consignee_parts = [meta.get('consignee', ''), meta.get('address', ''), meta.get('destination', '')]
+    consignee_details = ', '.join(p for p in consignee_parts if p)
     total_usd_words = num2words(meta['total_usd'], lang='en', to='currency', currency='USD').upper()
     replacements = {
         '{{MANIFEST_TITLE}}': 'DOKO EXPORTS PVT LTD',
@@ -933,16 +1113,20 @@ def build_bag_groups(merged_df, hawb_to_bag):
 def build_bag_rows(bag_groups, unassigned_hawbs):
     """
     Turn grouped rows into the flat row-list used for manifest splitting:
-      - A marking shared by MORE THAN ONE HAWB is a true consolidated bag:
-        collapse to a single row (NO OF PCS=1, summed weight/usd).
-      - A marking held by exactly ONE HAWB (e.g. a standalone multi-box
-        HAWB tagged with a sequential range like '5-9') is NOT collapsed -
-        its real pcs/weight/usd are preserved, only tagged with the marking.
+      - A marking written as 'BAG-<n>' is a true console bag: collapse all
+        its HAWBs to a single row (NO OF PCS=1, summed weight/usd), no
+        matter how many HAWBs carry it.
+      - Any other marking (a plain number or box-range like '3-12', even
+        if - unusually - shared by more than one HAWB) is NOT a console:
+        each HAWB keeps its own real row/pcs/weight, just tagged with the
+        marking via REMARKS so it still shows on the Custom Manifest sheet.
       - HAWBs with no marking pass through unchanged.
+    REMARKS carries the same note text used in the packing list ('Console
+    Bag: X' / 'Bag: X') so both documents agree.
     """
     bag_rows = []
     for bag, rows_list in bag_groups.items():
-        if len(rows_list) > 1:
+        if is_console_bag_marking(bag):
             total_weight = sum(float(r['Actual WT']) for r in rows_list)
             total_usd = sum(float(r['GBP']) for r in rows_list)
             first_row = rows_list[0]
@@ -962,21 +1146,23 @@ def build_bag_rows(bag_groups, unassigned_hawbs):
                 'CONSIGNER': first_row['CONSIGNER'],
                 'Consignee Name': first_row['Consignee Name'],
                 'Goods Description': combined_desc,
-                'Destination': ''
+                'Destination': '',
+                'REMARKS': f'Console Bag: {bag}'
             })
         else:
-            row = rows_list[0]
-            bag_rows.append({
-                'BOX_RANGE': bag,
-                'HAWB#': row['HAWB#'],
-                'NO OF PCS': row['NO OF PCS'],
-                'Actual WT': row['Actual WT'],
-                'GBP': row['GBP'],
-                'CONSIGNER': row['CONSIGNER'],
-                'Consignee Name': row['Consignee Name'],
-                'Goods Description': row['Goods Description'],
-                'Destination': row['Destination']
-            })
+            for row in rows_list:
+                bag_rows.append({
+                    'BOX_RANGE': bag,
+                    'HAWB#': row['HAWB#'],
+                    'NO OF PCS': row['NO OF PCS'],
+                    'Actual WT': row['Actual WT'],
+                    'GBP': row['GBP'],
+                    'CONSIGNER': row['CONSIGNER'],
+                    'Consignee Name': row['Consignee Name'],
+                    'Goods Description': row['Goods Description'],
+                    'Destination': row['Destination'],
+                    'REMARKS': f'Bag: {bag}'
+                })
     for row in unassigned_hawbs:
         bag_rows.append({
             'BOX_RANGE': '',
@@ -987,7 +1173,8 @@ def build_bag_rows(bag_groups, unassigned_hawbs):
             'CONSIGNER': row['CONSIGNER'],
             'Consignee Name': row['Consignee Name'],
             'Goods Description': row['Goods Description'],
-            'Destination': row['Destination']
+            'Destination': row['Destination'],
+            'REMARKS': ''
         })
     return bag_rows
 
@@ -1010,33 +1197,36 @@ def preview_bag_parts():
         merged = pd.read_csv(merged_path)
 
     hawb_to_bag = extract_hawb_to_bag(edited_rows, session_dir)
+    hawb_to_separate = extract_hawb_to_separate(edited_rows, session_dir)
+    # Separate-clearance HAWBs never enter the customs manifest/packing
+    # list - the consignee clears them on their own documents. They still
+    # count toward the full WT-Box report, just not here.
+    merged_for_customs = merged[~merged['HAWB#'].map(lambda h: hawb_to_separate.get(h, False))].reset_index(drop=True)
 
-    max_box_per_part = data.get('max_box_per_part')
-    if max_box_per_part in (None, ''):
-        max_box_per_part = get_last_box_limit()
-    else:
-        try:
-            max_box_per_part = int(max_box_per_part)
-            if max_box_per_part <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return jsonify({'error': 'max_box_per_part must be a positive integer'}), 400
+    try:
+        max_box_per_part = _parse_part_limit(data, 'max_box_per_part', get_last_box_limit(), int)
+        max_usd_per_part = _parse_part_limit(data, 'max_usd_per_part', get_last_usd_limit(), float)
+        max_weight_per_part = _parse_part_limit(data, 'max_weight_per_part', get_last_weight_limit(), float)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
 
     # Mirror generate_manifest's branching exactly, so the part count shown
     # here (and the number of invoice-number fields the user is asked to
     # fill in) always matches what will actually be generated - regardless
     # of whether any bag marking has been assigned.
     if not is_bag_based:
-        parts, _ = split_manifest(merged, bag_map=hawb_to_bag, max_box_per_part=max_box_per_part)
+        parts, _ = split_manifest(merged_for_customs, bag_map=hawb_to_bag, max_box_per_part=max_box_per_part,
+                                   max_usd_per_part=max_usd_per_part, max_weight_per_part=max_weight_per_part)
         return jsonify({'part_count': len(parts)})
 
-    bag_groups, unassigned_hawbs = build_bag_groups(merged, hawb_to_bag)
+    bag_groups, unassigned_hawbs = build_bag_groups(merged_for_customs, hawb_to_bag)
     bag_rows = build_bag_rows(bag_groups, unassigned_hawbs)
 
     if not bag_rows:
         return jsonify({'part_count': 0}), 200
     bag_df = pd.DataFrame(bag_rows)
-    parts, _ = split_manifest(bag_df, max_box_per_part=max_box_per_part)
+    parts, _ = split_manifest(bag_df, max_box_per_part=max_box_per_part,
+                               max_usd_per_part=max_usd_per_part, max_weight_per_part=max_weight_per_part)
     return jsonify({'part_count': len(parts)})
 
 @app.route('/generate_manifest', methods=['POST'])
@@ -1051,17 +1241,24 @@ def generate_manifest():
     if not session_id or not edited_rows:
         return jsonify({'error': 'Invalid request'}), 400
 
-    max_box_per_part = data.get('max_box_per_part')
-    if max_box_per_part in (None, ''):
-        max_box_per_part = get_last_box_limit()
-    else:
-        try:
-            max_box_per_part = int(max_box_per_part)
-            if max_box_per_part <= 0:
-                raise ValueError
-        except (TypeError, ValueError):
-            return jsonify({'error': 'max_box_per_part must be a positive integer'}), 400
+    try:
+        max_box_per_part = _parse_part_limit(data, 'max_box_per_part', get_last_box_limit(), int)
+        max_usd_per_part = _parse_part_limit(data, 'max_usd_per_part', get_last_usd_limit(), float)
+        max_weight_per_part = _parse_part_limit(data, 'max_weight_per_part', get_last_weight_limit(), float)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     save_last_box_limit(max_box_per_part)
+    save_last_usd_limit(max_usd_per_part)
+    save_last_weight_limit(max_weight_per_part)
+
+    # Consignee shown on the chamber certificate. Sent from the UI's
+    # dropdown as {id, name, address, country}; falls back to the old
+    # hardcoded default (also DEFAULT_CONSIGNEES[0]) if omitted, so older
+    # clients/requests keep working unchanged.
+    consignee_input = data.get('consignee') or {}
+    heading_consignee = str(consignee_input.get('name') or '').strip() or "ESHIPPER EXPRESS COURIER"
+    heading_address = str(consignee_input.get('address') or '').strip()
+    heading_destination = str(consignee_input.get('country') or '').strip() or "UK"
 
     session_dir = ensure_dir(os.path.join(TEMP_FOLDER, session_id))
     merged = session_merged_data.get(session_id)
@@ -1074,8 +1271,19 @@ def generate_manifest():
     hawb_to_bag = extract_hawb_to_bag(edited_rows, session_dir)
     save_session_bag_markings(session_dir, hawb_to_bag)
 
+    hawb_to_separate = extract_hawb_to_separate(edited_rows, session_dir)
+    save_session_separate_clearance(session_dir, hawb_to_separate)
+    # Separate-clearance HAWBs are cleared by the consignee on their own
+    # documents - they must never appear on Doko's customs manifest,
+    # packing list, or chamber certificate. They stay in the WT-Box report
+    # (already saved separately via /save_wtbox) since that reflects the
+    # whole physical shipment handed to the airline.
+    merged_for_customs = merged[~merged['HAWB#'].map(lambda h: hawb_to_separate.get(h, False))].reset_index(drop=True)
+    if merged_for_customs.empty:
+        return jsonify({'error': 'All shipments are flagged for Separate Clearance - there is nothing left to generate a customs manifest for.'}), 400
+
     if is_bag_based:
-        bag_groups, unassigned_hawbs = build_bag_groups(merged, hawb_to_bag)
+        bag_groups, unassigned_hawbs = build_bag_groups(merged_for_customs, hawb_to_bag)
         bag_rows = build_bag_rows(bag_groups, unassigned_hawbs)
 
         if not bag_rows:
@@ -1091,7 +1299,8 @@ def generate_manifest():
             box_start = end + 1
         bag_df['BOX_RANGE'] = box_ranges
 
-        parts, itemised_parts = split_manifest(bag_df, max_box_per_part=max_box_per_part)
+        parts, itemised_parts = split_manifest(bag_df, max_box_per_part=max_box_per_part,
+                                                max_usd_per_part=max_usd_per_part, max_weight_per_part=max_weight_per_part)
 
         if invoice_numbers is None or len(invoice_numbers) != len(parts):
             app.logger.error(f"Invoice count mismatch: expected {len(parts)}, got {len(invoice_numbers) if invoice_numbers else 0}")
@@ -1100,23 +1309,22 @@ def generate_manifest():
         invoice_date_path = os.path.join(session_dir, 'invoice_date.txt')
         invoice_date = open(invoice_date_path).read().strip() if os.path.exists(invoice_date_path) else datetime.now().strftime('%d-%m-%Y')
 
-        # Console Bag: vs Bag: is decided the same way build_bag_note_map does,
-        # but computed directly from bag_groups since we already know exactly
-        # which markings combine 2+ HAWBs here.
+        # Console Bag: vs Bag: is decided the same way build_bag_note_map /
+        # build_bag_rows does: by the marking's format ('BAG-<n>' = console),
+        # not by how many HAWBs happen to share it.
         hawb_to_note = {
-            row['HAWB#']: (f'Console Bag: {bag}' if len(rows_list) > 1 else f'Bag: {bag}')
+            row['HAWB#']: (f'Console Bag: {bag}' if is_console_bag_marking(bag) else f'Bag: {bag}')
             for bag, rows_list in bag_groups.items() for row in rows_list
         }
 
-        # A marking backed by more than one HAWB is a true consolidated bag
-        # (its row's HAWB# was replaced by the bag label itself); a marking
-        # held by a single HAWB (e.g. a standalone multi-box range like
-        # '5-9') keeps its real HAWB# and isn't a synthetic bag row.
-        consolidated_labels = {bag for bag, rows_list in bag_groups.items() if len(rows_list) > 1}
+        # A 'BAG-<n>' marking is a true consolidated bag (its row's HAWB#
+        # was replaced by the bag label itself in build_bag_rows); any other
+        # marking (a plain number or box-range like '5-9') keeps its real
+        # HAWB# and isn't a synthetic bag row, even if shared by more than
+        # one HAWB.
+        consolidated_labels = {bag for bag in bag_groups if is_console_bag_marking(bag)}
 
         file_list = []
-        heading_consignee = "ESHIPPER EXPRESS COURIER"
-        heading_destination = "UK"
 
         for idx, (part_df, itemised_df) in enumerate(zip(parts, itemised_parts), start=1):
             inv_num = invoice_numbers[idx-1] if invoice_numbers and idx-1 < len(invoice_numbers) else f"BAG-{idx}"
@@ -1149,7 +1357,8 @@ def generate_manifest():
             real_part_df = pd.DataFrame(real_rows_for_part)
 
             itemised_df = create_itemised_sheet(real_part_df, console_bag_notes=hawb_to_note)
-            out_path, filename = save_excel_for_part(part_df, itemised_df, idx, invoice_date, session_dir, inv_num, narration_text)
+            out_path, filename = save_excel_for_part(part_df, itemised_df, idx, invoice_date, session_dir, inv_num, narration_text,
+                                                       consignee_name=heading_consignee, consignee_address=heading_address, consignee_country=heading_destination)
             file_id = f"{session_id}_bag_{idx}"
             download_files[file_id] = {'path': out_path, 'name': filename, 'invoice_number': inv_num}
             file_list.append({'name': filename, 'id': file_id, 'part_number': idx, 'type': 'bag'})
@@ -1167,6 +1376,7 @@ def generate_manifest():
                 'total_boxes': total_boxes,
                 'packing_total_pcs': packing_total_pcs,
                 'consignee': heading_consignee,
+                'address': heading_address,
                 'destination': heading_destination
             }
             chamber_path, chamber_filename = generate_chamber_certificate(session_dir, meta, inv_num, invoice_date, idx)
@@ -1183,7 +1393,8 @@ def generate_manifest():
         # Only real bag/console-bag labels appear as a note in the packing
         # list - hawb_to_bag already comes from the dedicated field, so
         # every non-empty value here is a genuine marking.
-        parts, itemised_parts = split_manifest(merged, bag_map=hawb_to_bag, max_box_per_part=max_box_per_part)
+        parts, itemised_parts = split_manifest(merged_for_customs, bag_map=hawb_to_bag, max_box_per_part=max_box_per_part,
+                                                max_usd_per_part=max_usd_per_part, max_weight_per_part=max_weight_per_part)
         invoice_date_path = os.path.join(session_dir, 'invoice_date.txt')
         invoice_date = open(invoice_date_path).read().strip() if os.path.exists(invoice_date_path) else datetime.now().strftime('%d-%m-%Y')
 
@@ -1197,15 +1408,14 @@ def generate_manifest():
             return jsonify({'error': f'Invoice number count mismatch: expected {len(parts)} but received {len(invoice_numbers)}. Please re-enter.'}), 400
 
         file_list = []
-        heading_consignee = "ESHIPPER EXPRESS COURIER"
-        heading_destination = "UK"
 
         for idx, (part_df, itemised_df) in enumerate(zip(parts, itemised_parts), start=1):
             if invoice_numbers and idx - 1 < len(invoice_numbers) and str(invoice_numbers[idx - 1]).strip():
                 inv_num = str(invoice_numbers[idx - 1]).strip()
             else:
                 inv_num = f"ORIG-{idx}"
-            out_path, filename = save_excel_for_part(part_df, itemised_df, idx, invoice_date, session_dir, inv_num)
+            out_path, filename = save_excel_for_part(part_df, itemised_df, idx, invoice_date, session_dir, inv_num,
+                                                       consignee_name=heading_consignee, consignee_address=heading_address, consignee_country=heading_destination)
             file_id = f"{session_id}_orig_{idx}"
             download_files[file_id] = {'path': out_path, 'name': filename, 'invoice_number': inv_num}
             file_list.append({'name': filename, 'id': file_id, 'part_number': idx, 'type': 'orig'})
@@ -1223,6 +1433,7 @@ def generate_manifest():
                 'total_boxes': total_boxes,
                 'packing_total_pcs': packing_total_pcs,
                 'consignee': heading_consignee,
+                'address': heading_address,
                 'destination': heading_destination
             }
             chamber_path, chamber_filename = generate_chamber_certificate(session_dir, meta, inv_num, invoice_date, idx)
@@ -1262,6 +1473,53 @@ def chamber_certificate(file_id):
         return "File no longer exists", 404
     return send_file(file_path, as_attachment=True, download_name=original_name,
                      mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+
+@app.route('/preview_manifest/<file_id>')
+@login_required
+def preview_manifest(file_id):
+    """Read back the already-generated manifest workbook and return its
+    'Custom Manifest' and 'Custom Packing List' sheets as plain row arrays,
+    so the frontend can render a WYSIWYG preview before the user downloads
+    the actual file."""
+    file_info = download_files.get(file_id)
+    if not file_info:
+        return jsonify({'error': 'File not found'}), 404
+    file_path = file_info['path']
+    if not os.path.exists(file_path):
+        return jsonify({'error': 'File no longer exists'}), 404
+    wb = openpyxl.load_workbook(file_path, data_only=True)
+
+    def sheet_to_rows(ws):
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            rows.append(['' if v is None else v for v in row])
+        return rows
+
+    result = {}
+    if 'Custom Manifest' in wb.sheetnames:
+        result['manifest'] = sheet_to_rows(wb['Custom Manifest'])
+    if 'Custom Packing List' in wb.sheetnames:
+        result['packing_list'] = sheet_to_rows(wb['Custom Packing List'])
+    return jsonify(result)
+
+@app.route('/preview_chamber/<chamber_file_id>')
+@login_required
+def preview_chamber(chamber_file_id):
+    """Read back the already-generated chamber certificate .docx and return
+    its text content for the preview modal. Returns 404 if this part had no
+    chamber cert (e.g. the template placeholders didn't match)."""
+    file_info = chamber_download_files.get(chamber_file_id)
+    if not file_info:
+        return jsonify({'error': 'Certificate not found'}), 404
+    file_path = file_info['path']
+    if not os.path.exists(file_path):
+        return jsonify({'error': 'File no longer exists'}), 404
+    doc = Document(file_path)
+    paragraphs = [p.text for p in doc.paragraphs if p.text.strip() != '']
+    tables = []
+    for table in doc.tables:
+        tables.append([[cell.text for cell in row.cells] for row in table.rows])
+    return jsonify({'paragraphs': paragraphs, 'tables': tables})
 
 @app.route('/download_all/<session_id>')
 @login_required
@@ -1325,6 +1583,13 @@ def save_wtbox():
     if 'BagMarking' not in df_wt.columns:
         df_wt['BagMarking'] = ''
     df_wt['BagMarking'] = df_wt['BagMarking'].fillna('')
+    if 'SeparateClearance' not in df_wt.columns:
+        df_wt['SeparateClearance'] = False
+    # Marked in the report as Yes/blank rather than True/False, matching
+    # the other text-style columns - this row still counts toward the
+    # totals below (the WT-Box report is the whole physical shipment
+    # handed to the airline; only the customs manifest excludes it).
+    df_wt['SeparateClearance'] = df_wt['SeparateClearance'].fillna(False).apply(lambda v: 'Yes' if v else '')
     total_box = 0
     for val in df_wt['Box']:
         if isinstance(val, (int, float)):
@@ -1336,12 +1601,21 @@ def save_wtbox():
         'Box': [total_box],
         'BagMarking': [''],
         'Weight': [round(total_weight, 2)],
-        'Country': ['']
+        'Country': [''],
+        'SeparateClearance': ['']
     })
     df_wt = pd.concat([df_wt, total_row], ignore_index=True)
-    column_order = ['HAWB', 'Details', 'Box', 'BagMarking', 'Weight', 'Country']
+    column_order = ['HAWB', 'Details', 'Box', 'BagMarking', 'Weight', 'Country', 'SeparateClearance']
     df_wt = df_wt[column_order]
-    df_wt = df_wt.rename(columns={'BagMarking': 'Bag Marking'})
+    df_wt = df_wt.rename(columns={'BagMarking': 'Bag Marking', 'SeparateClearance': 'Separate Clearance'})
+
+    # Persist the flags per session too (mirrors save_session_bag_markings),
+    # so generate_manifest / preview_bag_parts can still see them even if a
+    # later request doesn't resend the full edited row set.
+    session_dir_for_flags = ensure_dir(os.path.join(TEMP_FOLDER, session_id))
+    hawb_to_separate = {row.get('HAWB'): bool(row.get('SeparateClearance')) for row in edited_rows}
+    save_session_separate_clearance(session_dir_for_flags, hawb_to_separate)
+
     output_filename = f"WT_Box_Report_{session_id}.xlsx"
     output_path = os.path.join(OUTPUT_FOLDER, output_filename)
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
@@ -1439,6 +1713,8 @@ def debug_redis_status():
         result['roundtrip_matches'] = (read_back == test_value)
     result['current_last_manifest_number'] = get_last_manifest_number()
     result['current_last_box_limit'] = get_last_box_limit()
+    result['current_last_usd_limit'] = get_last_usd_limit()
+    result['current_last_weight_limit'] = get_last_weight_limit()
     return jsonify(result)
 
 # ---------- Box-per-part limit (change customs limit without touching code) ----------
@@ -1460,6 +1736,66 @@ def update_last_box_limit():
         return jsonify({'error': 'max_box_per_part must be a positive integer'}), 400
     save_last_box_limit(value)
     return jsonify({'success': True, 'max_box_per_part': value})
+
+# ---------- USD-value-per-part limit ----------
+@app.route('/last_usd_limit', methods=['GET'])
+@login_required
+def last_usd_limit():
+    return jsonify({'max_usd_per_part': get_last_usd_limit()})
+
+@app.route('/last_usd_limit', methods=['POST'])
+@login_required
+def update_last_usd_limit():
+    data = request.get_json() or {}
+    value = data.get('max_usd_per_part')
+    try:
+        value = float(value)
+        if value <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'error': 'max_usd_per_part must be a positive number'}), 400
+    save_last_usd_limit(value)
+    return jsonify({'success': True, 'max_usd_per_part': value})
+
+# ---------- Weight-per-part (kg) limit ----------
+@app.route('/last_weight_limit', methods=['GET'])
+@login_required
+def last_weight_limit():
+    return jsonify({'max_weight_per_part': get_last_weight_limit()})
+
+@app.route('/last_weight_limit', methods=['POST'])
+@login_required
+def update_last_weight_limit():
+    data = request.get_json() or {}
+    value = data.get('max_weight_per_part')
+    try:
+        value = float(value)
+        if value <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'error': 'max_weight_per_part must be a positive number'}), 400
+    save_last_weight_limit(value)
+    return jsonify({'success': True, 'max_weight_per_part': value})
+
+# ---------- Consignees (name/address/country, selectable in UI + chamber cert) ----------
+@app.route('/consignees', methods=['GET'])
+@login_required
+def list_consignees():
+    return jsonify({'consignees': get_consignees()})
+
+@app.route('/consignees', methods=['POST'])
+@login_required
+def create_consignee():
+    data = request.get_json() or {}
+    name = str(data.get('name', '')).strip()
+    address = str(data.get('address', '')).strip()
+    country = str(data.get('country', '')).strip()
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+    if not country:
+        return jsonify({'error': 'country is required'}), 400
+    new_entry, consignees = add_consignee(name, address, country)
+    return jsonify({'success': True, 'consignee': new_entry, 'consignees': consignees})
 
 # ---------- Register Tracking Blueprint ----------
 app.register_blueprint(tracking_bp)
