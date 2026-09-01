@@ -342,7 +342,7 @@
                 <div class="wtbox-layout">
                     <div class="wtbox-table-container" id="wtboxTableContainer"></div>
                     <div class="bag-panel" id="bagPanel">
-                        <h3>📊 Bag Summary</h3>
+                        <h3 id="bagPanelTitle">📊 Bag Summary</h3>
                         <div id="bagPanelContent">Click on any marking in the <strong>Bag Marking</strong> column to see details.</div>
                         <div id="wtTotals" style="margin-top:1rem; padding:0.5rem; background:#e9ecef; border-radius:12px;"></div>
                     </div>
@@ -468,6 +468,16 @@ const wtboxSection = document.getElementById('wtboxSection');
 const wtboxTableContainer = document.getElementById('wtboxTableContainer');
 const saveWtboxBtn = document.getElementById('saveWtboxBtn');
 const bagPanelContent = document.getElementById('bagPanelContent');
+const bagPanelTitle = document.getElementById('bagPanelTitle');
+// Mirrors is_console_bag_marking() in app.py: only a marking explicitly
+// written as 'BAG-<something>' (case-insensitive) is a true console bag.
+// Plain numbers or box-ranges like '4-5' are just box markings, never a
+// console, regardless of how many HAWBs share them - so the 30kg
+// per-console-bag limit must not apply to them.
+function isConsoleBagMarking(marking) {
+    if (!marking) return false;
+    return /^\s*BAG\s*-\s*\S+/i.test(marking.toString());
+}
 const wtTotalsDiv = document.getElementById('wtTotals');
 const fileListSection = document.getElementById('fileListSection');
 const fileGrid = document.getElementById('fileGrid');
@@ -832,10 +842,13 @@ function updateBagPanel(bagLabel) {
     if (!currentWtboxData) return;
     if (!bagLabel || bagLabel.toString().trim() === '') {
         bagPanelContent.innerHTML = 'Click on any marking in the <strong>Bag Marking</strong> column to see details.';
+        bagPanelTitle.textContent = '📊 Bag Summary';
         currentSelectedBag = null;
         return;
     }
     currentSelectedBag = bagLabel;
+    const isConsole = isConsoleBagMarking(bagLabel);
+    bagPanelTitle.textContent = isConsole ? '📊 Bag Summary' : '📊 Box Summary';
     const items = [];
     for (const row of currentWtboxData) {
         if (row.BagMarking && row.BagMarking.toString() === bagLabel.toString()) {
@@ -851,7 +864,7 @@ function updateBagPanel(bagLabel) {
     for (const item of items) { totalWeight += item.weight; listHtml += `<li>${escapeHtml(item.hawb)} – ${item.weight.toFixed(2)} kg (${escapeHtml(String(item.box))} box${item.box == 1 ? '' : 'es'})</li>`; }
     listHtml += '</ul>';
     const maxWeight = parseFloat(document.getElementById('maxBagWeightInput')?.value) || 30;
-    const warningHtml = totalWeight > maxWeight ? `<div class="warning">⚠️ Warning: Total weight exceeds ${maxWeight} kg!</div>` : '';
+    const warningHtml = (isConsole && totalWeight > maxWeight) ? `<div class="warning">⚠️ Warning: Total weight exceeds ${maxWeight} kg!</div>` : '';
     bagPanelContent.innerHTML = `<div><strong>Marking:</strong> ${escapeHtml(bagLabel)}</div><div style="margin-top: 0.75rem;"><strong>HAWBs sharing this marking:</strong></div>${listHtml}<div class="bag-total"><strong>Total weight:</strong> ${totalWeight.toFixed(2)} kg</div>${warningHtml}`;
 }
 function makeBagClickable(cell, bagLabel) {
