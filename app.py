@@ -264,6 +264,16 @@ def delete_consignee(consignee_id):
     persisted = save_consignees(filtered)
     return filtered, persisted
 
+def reset_consignees():
+    """Wipe the saved consignee list entirely and persist an empty list.
+    Used to recover from cross-device/cross-deployment drift (e.g. the
+    mobile PWA showing entries a different deployment - or a since-lost
+    ephemeral local file - never actually had), so the user can start
+    clean instead of deleting stale entries one at a time. Returns
+    (empty_list, persisted)."""
+    persisted = save_consignees([])
+    return [], persisted
+
 def get_session_bag_markings(session_dir):
     """Read the persisted {HAWB: marking} map for a session, if any."""
     path = os.path.join(session_dir, 'bag_markings.json')
@@ -1847,6 +1857,19 @@ def delete_consignee_route(consignee_id):
     if not (UPSTASH_URL and UPSTASH_TOKEN):
         response['warning'] = ("Deleted from local storage only - Upstash Redis isn't configured on this deployment, so this may not "
                                 "stay deleted across requests on Vercel. Ask the site admin to set UPSTASH_REDIS_REST_URL / "
+                                "UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL / KV_REST_API_TOKEN).")
+    return jsonify(response)
+
+@app.route('/consignees/reset', methods=['POST'])
+@login_required
+def reset_consignees_route():
+    updated, persisted = reset_consignees()
+    if not persisted:
+        return jsonify({'error': 'Could not clear consignees - storage is unavailable right now (see /debug/redis_status). Please try again, or contact the site admin.'}), 500
+    response = {'success': True, 'consignees': updated}
+    if not (UPSTASH_URL and UPSTASH_TOKEN):
+        response['warning'] = ("Cleared in local storage only - Upstash Redis isn't configured on this deployment, so this may not "
+                                "stay cleared across requests on Vercel. Ask the site admin to set UPSTASH_REDIS_REST_URL / "
                                 "UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL / KV_REST_API_TOKEN).")
     return jsonify(response)
 

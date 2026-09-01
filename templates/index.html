@@ -643,6 +643,9 @@ async function showManageConsigneesModal() {
         <p class="modal-hint">Add or remove consignees here. The dropdown used when generating a manifest updates automatically \u2014 nothing else changes.</p>
         <div id="manageConsigneeWarning" class="storage-warning" style="display:none;"></div>
         <div id="manageConsigneeListError" class="message error" style="display:none; margin-bottom:1rem;"></div>
+        <div style="display:flex; justify-content:flex-end; margin-bottom:0.5rem;">
+            <button id="mcClearAllBtn" style="background:none; border:1px solid #cf222e; color:#cf222e; border-radius:8px; padding:0.35rem 0.7rem; cursor:pointer; font-size:0.8rem; font-weight:600;">🧹 Clear All &amp; Start Fresh</button>
+        </div>
         <div id="manageConsigneeList" style="margin-bottom:1.5rem;"><p>Loading…</p></div>
         <h4 style="margin-bottom:0.5rem;">Add New</h4>
         <label class="modal-label">Name</label>
@@ -709,6 +712,30 @@ async function showManageConsigneesModal() {
             listErrorEl.style.display = 'block';
         }
     }
+
+    document.getElementById('mcClearAllBtn').onclick = async () => {
+        if (!confirm("This permanently deletes ALL saved consignees on this deployment (not just what's shown here) so you can start fresh. This can't be undone. Continue?")) return;
+        const clearBtn = document.getElementById('mcClearAllBtn');
+        clearBtn.disabled = true; clearBtn.textContent = 'Clearing…';
+        try {
+            const res = await fetch('/consignees/reset', { method: 'POST' });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                listErrorEl.style.display = 'none';
+                showStorageWarning(data.warning);
+                await refreshList();
+                await loadConsignees();
+            } else {
+                listErrorEl.textContent = data.error || 'Could not clear consignees.';
+                listErrorEl.style.display = 'block';
+            }
+        } catch (err) {
+            listErrorEl.textContent = 'Network error.';
+            listErrorEl.style.display = 'block';
+        } finally {
+            clearBtn.disabled = false; clearBtn.textContent = '🧹 Clear All & Start Fresh';
+        }
+    };
 
     const close = () => document.body.removeChild(modal);
     document.getElementById('mcCloseBtn').onclick = close;
