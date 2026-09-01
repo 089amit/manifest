@@ -560,7 +560,7 @@ function applyConsigneesList(list, selectId) {
 
 async function loadConsignees(selectId) {
     try {
-        const res = await fetch('/consignees', { cache: 'no-store' });
+        const res = await fetch(`/consignees?_=${Date.now()}`, { cache: 'no-store' });
         const data = await res.json();
         applyConsigneesList(data.consignees, selectId);
     } catch (err) {
@@ -732,7 +732,7 @@ async function showManageConsigneesModal() {
     async function fetchAndRenderList() {
         listEl.innerHTML = '<p>Loading…</p>';
         try {
-            const res = await fetch('/consignees', { cache: 'no-store' });
+            const res = await fetch(`/consignees?_=${Date.now()}`, { cache: 'no-store' });
             const data = await res.json();
             renderList(data.consignees || []);
         } catch (err) {
