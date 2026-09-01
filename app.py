@@ -221,26 +221,29 @@ def get_consignees():
 
 def save_consignees(consignees):
     """Persist the full consignee list (Upstash first, then local file).
-    Returns True if the write actually landed somewhere, False if both
-    Upstash and the local file failed - callers must check this instead of
-    assuming success, since a caught OSError used to be swallowed silently
-    here and the route would report success even though nothing was saved."""
+    Returns 'redis', 'local_file', or None (both failed) - callers must
+    check this instead of assuming success, since a caught OSError used to
+    be swallowed silently here and the route would report success even
+    though nothing was saved. Distinguishing 'local_file' from a hard
+    failure also lets a route flag the specific case where Upstash IS
+    configured but THIS write still fell back to the local file (e.g. a
+    transient timeout) - that's a much more concerning, easy-to-miss
+    failure mode than Upstash simply not being set up."""
     if _redis_set('consignees', json.dumps(consignees)):
-        return True
+        return 'redis'
     try:
         with open(LAST_CONSIGNEES_FILE, 'w') as f:
             json.dump({'consignees': consignees, 'updated_at': datetime.now().isoformat()}, f)
-        return True
+        return 'local_file'
     except OSError:
         app.logger.exception("Failed to save consignees")
-        return False
+        return None
 
 def add_consignee(name, address, country):
     """Append a new consignee to the saved list and persist it. Returns
-    (new_entry, full_list, persisted) - persisted is False if the write
-    didn't actually land anywhere (Upstash unset/unreachable AND the local
-    file write failed), so the caller can report a real error instead of a
-    false success."""
+    (new_entry, full_list, saved_via) - saved_via is 'redis', 'local_file',
+    or None (nothing actually persisted, so the caller should report a real
+    error instead of a false success)."""
     consignees = get_consignees()
     new_entry = {
         'id': uuid.uuid4().hex,
@@ -249,20 +252,21 @@ def add_consignee(name, address, country):
         'country': country.strip()
     }
     consignees.append(new_entry)
-    persisted = save_consignees(consignees)
-    return new_entry, consignees, persisted
+    saved_via = save_consignees(consignees)
+    return new_entry, consignees, saved_via
 
 def delete_consignee(consignee_id):
     """Remove a consignee from the saved list and persist it. Returns
-    (updated_list, persisted); updated_list is None if no consignee with
+    (updated_list, saved_via); updated_list is None if no consignee with
     that id existed in the CURRENT saved list (which is the authoritative
-    source - not whatever the browser has cached)."""
+    source - not whatever the browser has cached). saved_via mirrors
+    add_consignee's."""
     consignees = get_consignees()
     filtered = [c for c in consignees if c.get('id') != consignee_id]
     if len(filtered) == len(consignees):
-        return None, True
-    persisted = save_consignees(filtered)
-    return filtered, persisted
+        return None, 'redis'  # not found; saved_via unused on this path
+    saved_via = save_consignees(filtered)
+    return filtered, saved_via
 
 def reset_consignees():
     """Wipe the saved consignee list entirely and persist an empty list.
@@ -270,9 +274,9 @@ def reset_consignees():
     mobile PWA showing entries a different deployment - or a since-lost
     ephemeral local file - never actually had), so the user can start
     clean instead of deleting stale entries one at a time. Returns
-    (empty_list, persisted)."""
-    persisted = save_consignees([])
-    return [], persisted
+    (empty_list, saved_via)."""
+    saved_via = save_consignees([])
+    return [], saved_via
 
 def get_session_bag_markings(session_dir):
     """Read the persisted {HAWB: marking} map for a session, if any."""
@@ -1814,6 +1818,22 @@ def update_last_weight_limit():
     return jsonify({'success': True, 'max_weight_per_part': value})
 
 # ---------- Consignees (name/address/country, selectable in UI + chamber cert) ----------
+def _storage_warning(saved_via, verb):
+    """Build the warning message for a consignee write, distinguishing
+    'Upstash was never configured' from the more concerning 'Upstash IS
+    configured but THIS write still fell back to the local file' - the
+    latter usually means a transient Redis timeout/network error and is
+    worth calling out differently since it can otherwise look identical to
+    working correctly."""
+    if saved_via == 'redis':
+        return None
+    if UPSTASH_URL and UPSTASH_TOKEN:
+        return (f"{verb} to local storage only - the write to Upstash Redis failed just now even though it's configured "
+                f"(check /debug/redis_status for a live round-trip test). This may not survive across requests on Vercel.")
+    return (f"{verb} to local storage only - Upstash Redis isn't configured on this deployment, so this may not "
+            f"survive across requests on Vercel. Ask the site admin to set UPSTASH_REDIS_REST_URL / "
+            f"UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL / KV_REST_API_TOKEN).")
+
 @app.route('/consignees', methods=['GET'])
 @login_required
 def list_consignees():
@@ -1835,42 +1855,39 @@ def create_consignee():
         return jsonify({'error': 'name is required'}), 400
     if not country:
         return jsonify({'error': 'country is required'}), 400
-    new_entry, consignees, persisted = add_consignee(name, address, country)
-    if not persisted:
+    new_entry, consignees, saved_via = add_consignee(name, address, country)
+    if not saved_via:
         return jsonify({'error': 'Could not save this consignee - storage is unavailable right now (see /debug/redis_status). Please try again, or contact the site admin.'}), 500
     response = {'success': True, 'consignee': new_entry, 'consignees': consignees}
-    if not (UPSTASH_URL and UPSTASH_TOKEN):
-        response['warning'] = ("Saved to local storage only - Upstash Redis isn't configured on this deployment, so this may not "
-                                "survive across requests on Vercel. Ask the site admin to set UPSTASH_REDIS_REST_URL / "
-                                "UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL / KV_REST_API_TOKEN).")
+    warning = _storage_warning(saved_via, 'Saved')
+    if warning:
+        response['warning'] = warning
     return jsonify(response)
 
 @app.route('/consignees/<consignee_id>', methods=['DELETE'])
 @login_required
 def delete_consignee_route(consignee_id):
-    updated, persisted = delete_consignee(consignee_id)
+    updated, saved_via = delete_consignee(consignee_id)
     if updated is None:
         return jsonify({'error': 'Consignee not found - the saved list on the server no longer has this entry (it may never have actually been saved; try refreshing the list).'}), 404
-    if not persisted:
+    if not saved_via:
         return jsonify({'error': 'Could not save the deletion - storage is unavailable right now (see /debug/redis_status). Please try again, or contact the site admin.'}), 500
     response = {'success': True, 'consignees': updated}
-    if not (UPSTASH_URL and UPSTASH_TOKEN):
-        response['warning'] = ("Deleted from local storage only - Upstash Redis isn't configured on this deployment, so this may not "
-                                "stay deleted across requests on Vercel. Ask the site admin to set UPSTASH_REDIS_REST_URL / "
-                                "UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL / KV_REST_API_TOKEN).")
+    warning = _storage_warning(saved_via, 'Deleted')
+    if warning:
+        response['warning'] = warning
     return jsonify(response)
 
 @app.route('/consignees/reset', methods=['POST'])
 @login_required
 def reset_consignees_route():
-    updated, persisted = reset_consignees()
-    if not persisted:
+    updated, saved_via = reset_consignees()
+    if not saved_via:
         return jsonify({'error': 'Could not clear consignees - storage is unavailable right now (see /debug/redis_status). Please try again, or contact the site admin.'}), 500
     response = {'success': True, 'consignees': updated}
-    if not (UPSTASH_URL and UPSTASH_TOKEN):
-        response['warning'] = ("Cleared in local storage only - Upstash Redis isn't configured on this deployment, so this may not "
-                                "stay cleared across requests on Vercel. Ask the site admin to set UPSTASH_REDIS_REST_URL / "
-                                "UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL / KV_REST_API_TOKEN).")
+    warning = _storage_warning(saved_via, 'Cleared')
+    if warning:
+        response['warning'] = warning
     return jsonify(response)
 
 # ---------- Register Tracking Blueprint ----------

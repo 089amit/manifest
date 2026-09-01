@@ -518,31 +518,41 @@ const consigneeSelect = document.getElementById('consigneeSelect');
 const addConsigneeBtn = document.getElementById('addConsigneeBtn');
 let allConsignees = [];
 
+// Renders the dropdown from a list we already have in hand - no fetch.
+// Used after add/delete/reset, whose responses already carry the
+// authoritative post-write list, so we don't need (and shouldn't trust) a
+// fresh GET immediately afterward - a globally-replicated Redis can serve a
+// read from a replica that hasn't caught up to a write yet, which was
+// making just-applied changes look like they "didn't take."
+function applyConsigneesList(list, selectId) {
+    allConsignees = list || [];
+    const previousValue = selectId || consigneeSelect.value;
+    consigneeSelect.innerHTML = '';
+    if (allConsignees.length === 0) {
+        consigneeSelect.innerHTML = '<option value="">No consignees yet — click Add</option>';
+        return;
+    }
+    allConsignees.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.country ? `${c.name} — ${c.country}` : c.name;
+        consigneeSelect.appendChild(opt);
+    });
+    // Keep whatever was selected before if it still exists, otherwise
+    // fall back to the newest entry so a just-added consignee is picked
+    // up automatically.
+    if (previousValue && allConsignees.some(c => c.id === previousValue)) {
+        consigneeSelect.value = previousValue;
+    } else {
+        consigneeSelect.value = allConsignees[allConsignees.length - 1].id;
+    }
+}
+
 async function loadConsignees(selectId) {
     try {
         const res = await fetch('/consignees', { cache: 'no-store' });
         const data = await res.json();
-        allConsignees = data.consignees || [];
-        const previousValue = selectId || consigneeSelect.value;
-        consigneeSelect.innerHTML = '';
-        if (allConsignees.length === 0) {
-            consigneeSelect.innerHTML = '<option value="">No consignees yet — click Add</option>';
-            return;
-        }
-        allConsignees.forEach(c => {
-            const opt = document.createElement('option');
-            opt.value = c.id;
-            opt.textContent = c.country ? `${c.name} — ${c.country}` : c.name;
-            consigneeSelect.appendChild(opt);
-        });
-        // Keep whatever was selected before if it still exists, otherwise
-        // fall back to the newest entry so a just-added consignee is picked
-        // up automatically.
-        if (previousValue && allConsignees.some(c => c.id === previousValue)) {
-            consigneeSelect.value = previousValue;
-        } else {
-            consigneeSelect.value = allConsignees[allConsignees.length - 1].id;
-        }
+        applyConsigneesList(data.consignees, selectId);
     } catch (err) {
         consigneeSelect.innerHTML = '<option value="">Could not load consignees</option>';
     }
@@ -603,7 +613,7 @@ function showAddConsigneeModal() {
             const data = await res.json();
             if (res.ok && data.success) {
                 close();
-                await loadConsignees(data.consignee.id);
+                applyConsigneesList(data.consignees, data.consignee.id);
                 if (data.warning) alert(data.warning);
             } else {
                 errorDiv.textContent = data.error || 'Could not save consignee.';
@@ -672,40 +682,49 @@ async function showManageConsigneesModal() {
         else { warningEl.style.display = 'none'; }
     }
 
-    async function refreshList() {
+    // Renders the list from data already in hand (e.g. straight from an
+    // add/delete/reset response) - no fetch. This is what fixes deletes
+    // "not sticking": re-fetching right after a write can land on a
+    // not-yet-caught-up read replica on a globally-distributed Redis, which
+    // makes an already-successful delete look like it silently failed. The
+    // mutation response itself is always the authoritative post-write state.
+    function renderList(list) {
+        listEl.innerHTML = renderConsigneeListHtml(list);
+        listEl.querySelectorAll('.consignee-delete-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const id = btn.getAttribute('data-id');
+                const row = btn.closest('.consignee-row');
+                const rowName = row ? row.querySelector('div > div').textContent : 'this consignee';
+                if (!confirm(`Delete "${rowName}"? This can't be undone.`)) return;
+                btn.disabled = true; btn.textContent = 'Deleting…';
+                try {
+                    const delRes = await fetch(`/consignees/${id}`, { method: 'DELETE' });
+                    const delData = await delRes.json();
+                    if (delRes.ok && delData.success) {
+                        listErrorEl.style.display = 'none';
+                        showStorageWarning(delData.warning);
+                        renderList(delData.consignees);
+                        applyConsigneesList(delData.consignees);
+                    } else {
+                        listErrorEl.textContent = delData.error || 'Could not delete consignee.';
+                        listErrorEl.style.display = 'block';
+                        btn.disabled = false; btn.textContent = '🗑 Delete';
+                    }
+                } catch (err) {
+                    listErrorEl.textContent = 'Network error.';
+                    listErrorEl.style.display = 'block';
+                    btn.disabled = false; btn.textContent = '🗑 Delete';
+                }
+            });
+        });
+    }
+
+    async function fetchAndRenderList() {
         listEl.innerHTML = '<p>Loading…</p>';
         try {
             const res = await fetch('/consignees', { cache: 'no-store' });
             const data = await res.json();
-            const list = data.consignees || [];
-            listEl.innerHTML = renderConsigneeListHtml(list);
-            listEl.querySelectorAll('.consignee-delete-btn').forEach(btn => {
-                btn.addEventListener('click', async () => {
-                    const id = btn.getAttribute('data-id');
-                    const row = btn.closest('.consignee-row');
-                    const rowName = row ? row.querySelector('div > div').textContent : 'this consignee';
-                    if (!confirm(`Delete "${rowName}"? This can't be undone.`)) return;
-                    btn.disabled = true; btn.textContent = 'Deleting…';
-                    try {
-                        const delRes = await fetch(`/consignees/${id}`, { method: 'DELETE' });
-                        const delData = await delRes.json();
-                        if (delRes.ok && delData.success) {
-                            listErrorEl.style.display = 'none';
-                            showStorageWarning(delData.warning);
-                            await refreshList();
-                            await loadConsignees();
-                        } else {
-                            listErrorEl.textContent = delData.error || 'Could not delete consignee.';
-                            listErrorEl.style.display = 'block';
-                            btn.disabled = false; btn.textContent = '🗑 Delete';
-                        }
-                    } catch (err) {
-                        listErrorEl.textContent = 'Network error.';
-                        listErrorEl.style.display = 'block';
-                        btn.disabled = false; btn.textContent = '🗑 Delete';
-                    }
-                });
-            });
+            renderList(data.consignees || []);
         } catch (err) {
             listEl.innerHTML = '';
             listErrorEl.textContent = 'Could not load consignees.';
@@ -723,8 +742,8 @@ async function showManageConsigneesModal() {
             if (res.ok && data.success) {
                 listErrorEl.style.display = 'none';
                 showStorageWarning(data.warning);
-                await refreshList();
-                await loadConsignees();
+                renderList(data.consignees);
+                applyConsigneesList(data.consignees);
             } else {
                 listErrorEl.textContent = data.error || 'Could not clear consignees.';
                 listErrorEl.style.display = 'block';
@@ -764,8 +783,8 @@ async function showManageConsigneesModal() {
                 document.getElementById('mcName').value = '';
                 document.getElementById('mcAddress').value = '';
                 document.getElementById('mcCountry').value = '';
-                await refreshList();
-                await loadConsignees(data.consignee.id);
+                renderList(data.consignees);
+                applyConsigneesList(data.consignees, data.consignee.id);
             } else {
                 errorDiv.textContent = data.error || 'Could not save consignee.';
                 errorDiv.style.display = 'block';
@@ -778,7 +797,7 @@ async function showManageConsigneesModal() {
         }
     };
 
-    await refreshList();
+    await fetchAndRenderList();
 }
 document.getElementById('manageConsigneesBtn').addEventListener('click', showManageConsigneesModal);
 
