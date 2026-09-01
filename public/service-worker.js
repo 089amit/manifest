@@ -1,5 +1,5 @@
 // service-worker.js
-const CACHE_NAME = 'manifest-track-v1';
+const CACHE_NAME = 'manifest-track-v2';
 const urlsToCache = [
   '/offline.html',
   '/static/manifest.json',
@@ -68,7 +68,17 @@ self.addEventListener('fetch', event => {
             '/tracking/', '/upload_and_prepare', '/preview_bag_parts',
             '/generate_manifest', '/save_wtbox', '/suggest_bag_markings',
             '/last_manifest_number', '/last_box_limit', '/download/', '/chamber_certificate/',
-            '/download_all/'
+            '/download_all/',
+            // preview_manifest/preview_chamber reuse the same file_id across
+            // regenerations of the same session/part (e.g. after switching the
+            // selected consignee), so a cache-first hit here served stale
+            // preview content even though the regenerated file on disk (and
+            // its /download/ or /chamber_certificate/ link, already excluded
+            // above) was always correct. /consignees already sends
+            // Cache-Control: no-store from the server, but that header isn't
+            // honored by this manual cache-first logic, so it needs the same
+            // explicit exclusion.
+            '/preview_manifest/', '/preview_chamber/', '/consignees'
           ];
           const shouldCache = !noCachePaths.some(p => event.request.url.includes(p));
           if (shouldCache) {
