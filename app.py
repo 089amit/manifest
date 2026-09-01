@@ -220,18 +220,27 @@ def get_consignees():
     return DEFAULT_CONSIGNEES
 
 def save_consignees(consignees):
-    """Persist the full consignee list (Upstash first, then local file)."""
+    """Persist the full consignee list (Upstash first, then local file).
+    Returns True if the write actually landed somewhere, False if both
+    Upstash and the local file failed - callers must check this instead of
+    assuming success, since a caught OSError used to be swallowed silently
+    here and the route would report success even though nothing was saved."""
     if _redis_set('consignees', json.dumps(consignees)):
-        return
+        return True
     try:
         with open(LAST_CONSIGNEES_FILE, 'w') as f:
             json.dump({'consignees': consignees, 'updated_at': datetime.now().isoformat()}, f)
+        return True
     except OSError:
         app.logger.exception("Failed to save consignees")
+        return False
 
 def add_consignee(name, address, country):
     """Append a new consignee to the saved list and persist it. Returns
-    (new_entry, full_list)."""
+    (new_entry, full_list, persisted) - persisted is False if the write
+    didn't actually land anywhere (Upstash unset/unreachable AND the local
+    file write failed), so the caller can report a real error instead of a
+    false success."""
     consignees = get_consignees()
     new_entry = {
         'id': uuid.uuid4().hex,
@@ -240,18 +249,20 @@ def add_consignee(name, address, country):
         'country': country.strip()
     }
     consignees.append(new_entry)
-    save_consignees(consignees)
-    return new_entry, consignees
+    persisted = save_consignees(consignees)
+    return new_entry, consignees, persisted
 
 def delete_consignee(consignee_id):
-    """Remove a consignee from the saved list and persist it. Returns the
-    updated full list, or None if no consignee with that id existed."""
+    """Remove a consignee from the saved list and persist it. Returns
+    (updated_list, persisted); updated_list is None if no consignee with
+    that id existed in the CURRENT saved list (which is the authoritative
+    source - not whatever the browser has cached)."""
     consignees = get_consignees()
     filtered = [c for c in consignees if c.get('id') != consignee_id]
     if len(filtered) == len(consignees):
-        return None
-    save_consignees(filtered)
-    return filtered
+        return None, True
+    persisted = save_consignees(filtered)
+    return filtered, persisted
 
 def get_session_bag_markings(session_dir):
     """Read the persisted {HAWB: marking} map for a session, if any."""
@@ -1725,6 +1736,11 @@ def debug_redis_status():
     result['current_last_box_limit'] = get_last_box_limit()
     result['current_last_usd_limit'] = get_last_usd_limit()
     result['current_last_weight_limit'] = get_last_weight_limit()
+    # Specifically for the consignees bug report: shows whether the list
+    # currently being served actually came from Redis, or is falling back
+    # to this instance's local (ephemeral-on-Vercel) file.
+    result['consignees_in_redis'] = _redis_get('consignees') is not None
+    result['current_consignees_count'] = len(get_consignees())
     return jsonify(result)
 
 # ---------- Box-per-part limit (change customs limit without touching code) ----------
@@ -1791,7 +1807,12 @@ def update_last_weight_limit():
 @app.route('/consignees', methods=['GET'])
 @login_required
 def list_consignees():
-    return jsonify({'consignees': get_consignees()})
+    resp = jsonify({'consignees': get_consignees()})
+    # Never let a browser/CDN/service-worker cache this - a stale list here
+    # is exactly what causes "it shows in the dropdown but deleting says
+    # not found" (the list shown no longer matches what's actually saved).
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
 
 @app.route('/consignees', methods=['POST'])
 @login_required
@@ -1804,16 +1825,30 @@ def create_consignee():
         return jsonify({'error': 'name is required'}), 400
     if not country:
         return jsonify({'error': 'country is required'}), 400
-    new_entry, consignees = add_consignee(name, address, country)
-    return jsonify({'success': True, 'consignee': new_entry, 'consignees': consignees})
+    new_entry, consignees, persisted = add_consignee(name, address, country)
+    if not persisted:
+        return jsonify({'error': 'Could not save this consignee - storage is unavailable right now (see /debug/redis_status). Please try again, or contact the site admin.'}), 500
+    response = {'success': True, 'consignee': new_entry, 'consignees': consignees}
+    if not (UPSTASH_URL and UPSTASH_TOKEN):
+        response['warning'] = ("Saved to local storage only - Upstash Redis isn't configured on this deployment, so this may not "
+                                "survive across requests on Vercel. Ask the site admin to set UPSTASH_REDIS_REST_URL / "
+                                "UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL / KV_REST_API_TOKEN).")
+    return jsonify(response)
 
 @app.route('/consignees/<consignee_id>', methods=['DELETE'])
 @login_required
 def delete_consignee_route(consignee_id):
-    updated = delete_consignee(consignee_id)
+    updated, persisted = delete_consignee(consignee_id)
     if updated is None:
-        return jsonify({'error': 'Consignee not found'}), 404
-    return jsonify({'success': True, 'consignees': updated})
+        return jsonify({'error': 'Consignee not found - the saved list on the server no longer has this entry (it may never have actually been saved; try refreshing the list).'}), 404
+    if not persisted:
+        return jsonify({'error': 'Could not save the deletion - storage is unavailable right now (see /debug/redis_status). Please try again, or contact the site admin.'}), 500
+    response = {'success': True, 'consignees': updated}
+    if not (UPSTASH_URL and UPSTASH_TOKEN):
+        response['warning'] = ("Deleted from local storage only - Upstash Redis isn't configured on this deployment, so this may not "
+                                "stay deleted across requests on Vercel. Ask the site admin to set UPSTASH_REDIS_REST_URL / "
+                                "UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL / KV_REST_API_TOKEN).")
+    return jsonify(response)
 
 # ---------- Register Tracking Blueprint ----------
 app.register_blueprint(tracking_bp)

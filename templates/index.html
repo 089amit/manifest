@@ -244,6 +244,10 @@
             border-radius: 8px; font-family: inherit; font-size: 0.95rem;
         }
         .consignee-row:last-child { border-bottom: none !important; }
+        .storage-warning {
+            background: #fff4e5; border: 1px solid #e8890c; color: #b3690a;
+            padding: 0.75rem; border-radius: 12px; margin-bottom: 1rem; font-size: 0.82rem; line-height: 1.4;
+        }
 
         /* ---------- Responsive ---------- */
         @media (max-width: 720px) {
@@ -516,7 +520,7 @@ let allConsignees = [];
 
 async function loadConsignees(selectId) {
     try {
-        const res = await fetch('/consignees');
+        const res = await fetch('/consignees', { cache: 'no-store' });
         const data = await res.json();
         allConsignees = data.consignees || [];
         const previousValue = selectId || consigneeSelect.value;
@@ -600,6 +604,7 @@ function showAddConsigneeModal() {
             if (res.ok && data.success) {
                 close();
                 await loadConsignees(data.consignee.id);
+                if (data.warning) alert(data.warning);
             } else {
                 errorDiv.textContent = data.error || 'Could not save consignee.';
                 errorDiv.style.display = 'block';
@@ -636,6 +641,7 @@ async function showManageConsigneesModal() {
     modalContent.innerHTML = `
         <h3>🏢 Manage Consignees</h3>
         <p class="modal-hint">Add or remove consignees here. The dropdown used when generating a manifest updates automatically \u2014 nothing else changes.</p>
+        <div id="manageConsigneeWarning" class="storage-warning" style="display:none;"></div>
         <div id="manageConsigneeListError" class="message error" style="display:none; margin-bottom:1rem;"></div>
         <div id="manageConsigneeList" style="margin-bottom:1.5rem;"><p>Loading…</p></div>
         <h4 style="margin-bottom:0.5rem;">Add New</h4>
@@ -657,11 +663,16 @@ async function showManageConsigneesModal() {
 
     const listEl = document.getElementById('manageConsigneeList');
     const listErrorEl = document.getElementById('manageConsigneeListError');
+    const warningEl = document.getElementById('manageConsigneeWarning');
+    function showStorageWarning(warning) {
+        if (warning) { warningEl.textContent = '⚠️ ' + warning; warningEl.style.display = 'block'; }
+        else { warningEl.style.display = 'none'; }
+    }
 
     async function refreshList() {
         listEl.innerHTML = '<p>Loading…</p>';
         try {
-            const res = await fetch('/consignees');
+            const res = await fetch('/consignees', { cache: 'no-store' });
             const data = await res.json();
             const list = data.consignees || [];
             listEl.innerHTML = renderConsigneeListHtml(list);
@@ -677,6 +688,7 @@ async function showManageConsigneesModal() {
                         const delData = await delRes.json();
                         if (delRes.ok && delData.success) {
                             listErrorEl.style.display = 'none';
+                            showStorageWarning(delData.warning);
                             await refreshList();
                             await loadConsignees();
                         } else {
@@ -721,6 +733,7 @@ async function showManageConsigneesModal() {
             const data = await res.json();
             if (res.ok && data.success) {
                 errorDiv.style.display = 'none';
+                showStorageWarning(data.warning);
                 document.getElementById('mcName').value = '';
                 document.getElementById('mcAddress').value = '';
                 document.getElementById('mcCountry').value = '';
